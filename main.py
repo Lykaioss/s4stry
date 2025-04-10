@@ -6,11 +6,13 @@ import os
 import requests
 from pathlib import Path
 import json
-from typing import Dict, List
+from typing import Dict, List, Set
 import uuid
 import logging
 import math
 import time
+from collections import defaultdict
+import random
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -37,12 +39,24 @@ renters: Dict[str, dict] = {}
 # Store information about file shards
 shard_locations: Dict[str, List[dict]] = {}
 
+# Store rack information
+racks: Dict[str, Set[str]] = defaultdict(set)  # rack_id -> set of renter_ids
+
 # Sharding configuration
 SHARD_SIZE = 1024 * 1024  # 1MB per shard
 MIN_SHARDS = 3  # Minimum number of shards to create
+REPLICATION_FACTOR = 3  # Number of copies for each shard
+RACK_COUNT = 3  # Number of racks in the system
 
 # Renter management
 RENTER_TIMEOUT = 60  # seconds
+
+def assign_rack(renter_id: str) -> str:
+    """Assign a renter to a rack."""
+    # Simple round-robin rack assignment
+    rack_id = str(len(renters) % RACK_COUNT)
+    racks[rack_id].add(renter_id)
+    return rack_id
 
 def cleanup_inactive_renters():
     """Remove renters that haven't sent a heartbeat recently."""
@@ -53,7 +67,52 @@ def cleanup_inactive_renters():
     ]
     for renter_id in inactive_renters:
         logger.info(f"Removing inactive renter: {renter_id}")
+        # Remove from rack
+        for rack_id, renter_set in racks.items():
+            if renter_id in renter_set:
+                renter_set.remove(renter_id)
+        # Remove from renters
         del renters[renter_id]
+
+def get_renters_for_shard(shard_index: int, num_shards: int) -> List[str]:
+    """Get a list of renters to store a shard and its replicas."""
+    cleanup_inactive_renters()
+    
+    if not renters:
+        raise HTTPException(
+            status_code=503,
+            detail="No renters available. Please wait for a renter to register."
+        )
+    
+    # Get all available renters
+    available_renters = list(renters.keys())
+    
+    # Adjust replication factor based on available renters
+    actual_replication = min(REPLICATION_FACTOR, len(available_renters))
+    if actual_replication < REPLICATION_FACTOR:
+        logger.warning(f"Reducing replication factor from {REPLICATION_FACTOR} to {actual_replication} due to limited renters")
+    
+    # Select renters from different racks
+    selected_renters = []
+    used_racks = set()
+    
+    # First, try to select renters from different racks
+    for rack_id, renter_set in racks.items():
+        if len(selected_renters) >= actual_replication:
+            break
+        available_in_rack = [r for r in renter_set if r in available_renters and r not in selected_renters]
+        if available_in_rack and rack_id not in used_racks:
+            selected_renters.append(random.choice(available_in_rack))
+            used_racks.add(rack_id)
+    
+    # If we still need more renters, select from any rack
+    while len(selected_renters) < actual_replication:
+        remaining_renters = [r for r in available_renters if r not in selected_renters]
+        if not remaining_renters:
+            break
+        selected_renters.append(random.choice(remaining_renters))
+    
+    return selected_renters
 
 def split_file_into_shards(file_path: Path, num_shards: int) -> List[Path]:
     """Split a file into multiple shards."""
@@ -71,44 +130,40 @@ def split_file_into_shards(file_path: Path, num_shards: int) -> List[Path]:
     return shards
 
 def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict]:
-    """Distribute shards across available renters."""
-    cleanup_inactive_renters()
-    
-    if not renters:
-        raise HTTPException(
-            status_code=503,
-            detail="No renters available. Please wait for a renter to register."
-        )
-    
+    """Distribute shards and their replicas across renters."""
     distributed_shards = []
-    renter_ids = list(renters.keys())
-    num_renters = len(renter_ids)
+    num_shards = len(shards)
     
     for i, shard_path in enumerate(shards):
-        renter_id = renter_ids[i % num_renters]  # Round-robin distribution
-        renter = renters[renter_id]
+        # Get renters for this shard and its replicas
+        shard_renters = get_renters_for_shard(i, num_shards)
         
-        try:
-            with open(shard_path, 'rb') as f:
-                files = {"file": (shard_path.name, f)}
-                response = requests.post(
-                    f"{renter['url']}/store-shard/",
-                    files=files,
-                    timeout=30
-                )
-                response.raise_for_status()
+        for replica_index, renter_id in enumerate(shard_renters):
+            renter = renters[renter_id]
+            shard_name = f"shard_{i}_replica_{replica_index}_{filename}"
+            
+            try:
+                with open(shard_path, 'rb') as f:
+                    files = {"file": (shard_name, f)}
+                    response = requests.post(
+                        f"{renter['url']}/store-shard/",
+                        files=files,
+                        timeout=30
+                    )
+                    response.raise_for_status()
                 
                 distributed_shards.append({
                     "renter_id": renter_id,
-                    "shard_path": shard_path.name,
-                    "shard_index": i
+                    "shard_path": shard_name,
+                    "shard_index": i,
+                    "replica_index": replica_index
                 })
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error sending shard to renter: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to send shard to renter: {str(e)}"
-            )
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error sending shard to renter: {str(e)}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to send shard to renter: {str(e)}"
+                )
     
     return distributed_shards
 
@@ -125,9 +180,10 @@ async def register_renter(renter_info: dict):
         renters[renter_id] = {
             "url": renter_info["url"],
             "storage_available": renter_info["storage_available"],
-            "last_heartbeat": time.time()
+            "last_heartbeat": time.time(),
+            "rack_id": assign_rack(renter_id)
         }
-        logger.info(f"Renter registered successfully with ID: {renter_id}")
+        logger.info(f"Renter registered successfully with ID: {renter_id} in rack {renters[renter_id]['rack_id']}")
         return {"renter_id": renter_id, "message": "Renter registered successfully"}
     except Exception as e:
         logger.error(f"Error registering renter: {str(e)}")
@@ -149,8 +205,11 @@ async def receive_heartbeat(heartbeat_info: dict):
 
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...)):
-    """Upload a file and distribute it across renters."""
+    """Upload a file and distribute it across renters with replication."""
     cleanup_inactive_renters()
+    
+    logger.info(f"Starting upload process for file: {file.filename}")
+    logger.info(f"Current renters: {renters}")
     
     if not renters:
         logger.error("No renters available")
@@ -170,13 +229,19 @@ async def upload_file(file: UploadFile = File(...)):
         # Calculate number of shards based on file size
         file_size = os.path.getsize(temp_path)
         num_shards = max(MIN_SHARDS, math.ceil(file_size / SHARD_SIZE))
-        logger.info(f"Splitting file into {num_shards} shards")
+        
+        # Calculate actual replication factor based on available renters
+        actual_replication = min(REPLICATION_FACTOR, len(renters))
+        logger.info(f"Splitting file into {num_shards} shards with replication factor {actual_replication}")
         
         # Split file into shards
         shards = split_file_into_shards(temp_path, num_shards)
+        logger.info(f"Created {len(shards)} shards")
         
-        # Distribute shards to renters
+        # Distribute shards to renters with replication
+        logger.info("Starting shard distribution to renters")
         distributed_shards = distribute_shards_to_renters(shards, file.filename)
+        logger.info(f"Successfully distributed shards: {distributed_shards}")
         
         # Store shard information
         shard_locations[file.filename] = distributed_shards
@@ -186,16 +251,17 @@ async def upload_file(file: UploadFile = File(...)):
         for shard in shards:
             os.remove(shard)
         
-        logger.info("File successfully uploaded and distributed")
+        logger.info("File successfully uploaded and distributed with replication")
         
         return {
             "filename": file.filename,
             "num_shards": num_shards,
+            "replication_factor": actual_replication,
             "shard_size": SHARD_SIZE,
-            "message": "File uploaded and distributed successfully"
+            "message": f"File uploaded and distributed successfully with replication factor {actual_replication}"
         }
     except Exception as e:
-        logger.error(f"Error in upload process: {str(e)}")
+        logger.error(f"Error in upload process: {str(e)}", exc_info=True)
         # Clean up temporary files if they exist
         if 'temp_path' in locals() and os.path.exists(temp_path):
             os.remove(temp_path)
@@ -229,23 +295,38 @@ async def download_file(filename: str):
                 detail="No renters available. Please wait for a renter to register."
             )
         
-        # Collect shards from renters in order
+        # Group shards by index
+        shards_by_index = defaultdict(list)
+        for shard_info in shard_locations[filename]:
+            shards_by_index[shard_info['shard_index']].append(shard_info)
+        
+        # Collect shards from renters in order, trying replicas if needed
         with open(temp_path, 'wb') as outfile:
-            for shard_info in sorted(shard_locations[filename], key=lambda x: x['shard_index']):
-                renter = renters[shard_info['renter_id']]
-                try:
-                    response = requests.get(
-                        f"{renter['url']}/retrieve-shard/",
-                        params={'filename': shard_info['shard_path']},
-                        timeout=30
-                    )
-                    response.raise_for_status()
-                    outfile.write(response.content)
-                except requests.exceptions.RequestException as e:
-                    logger.error(f"Error retrieving shard from renter: {str(e)}")
+            for shard_index in sorted(shards_by_index.keys()):
+                shard_retrieved = False
+                for shard_info in shards_by_index[shard_index]:
+                    if shard_retrieved:
+                        break
+                    renter = renters.get(shard_info['renter_id'])
+                    if not renter:
+                        continue
+                    try:
+                        response = requests.get(
+                            f"{renter['url']}/retrieve-shard/",
+                            params={'filename': shard_info['shard_path']},
+                            timeout=30
+                        )
+                        response.raise_for_status()
+                        outfile.write(response.content)
+                        shard_retrieved = True
+                        logger.info(f"Retrieved shard {shard_info['shard_path']} from renter {shard_info['renter_id']}")
+                    except requests.exceptions.RequestException as e:
+                        logger.warning(f"Failed to retrieve shard {shard_info['shard_path']} from renter {shard_info['renter_id']}: {str(e)}")
+                
+                if not shard_retrieved:
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Failed to retrieve shard from renter: {str(e)}"
+                        detail=f"Failed to retrieve shard {shard_index} from any renter"
                     )
         
         # Return the reconstructed file
@@ -276,7 +357,9 @@ async def delete_file(filename: str):
     try:
         # Delete shards from all renters
         for shard_info in shard_locations[filename]:
-            renter = renters[shard_info['renter_id']]
+            renter = renters.get(shard_info['renter_id'])
+            if not renter:
+                continue
             try:
                 response = requests.post(
                     f"{renter['url']}/delete-shard/",
