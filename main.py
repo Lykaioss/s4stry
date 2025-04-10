@@ -261,6 +261,41 @@ async def download_file(filename: str):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/delete/{filename}")
+async def delete_file(filename: str):
+    """Delete a file and its shards from all renters."""
+    cleanup_inactive_renters()
+    
+    if filename not in shard_locations:
+        logger.error(f"File not found: {filename}")
+        raise HTTPException(
+            status_code=404, 
+            detail=f"File '{filename}' not found."
+        )
+    
+    try:
+        # Delete shards from all renters
+        for shard_info in shard_locations[filename]:
+            renter = renters[shard_info['renter_id']]
+            try:
+                response = requests.post(
+                    f"{renter['url']}/delete-shard/",
+                    params={'filename': shard_info['shard_path']},
+                    timeout=30
+                )
+                response.raise_for_status()
+                logger.info(f"Deleted shard {shard_info['shard_path']} from renter {shard_info['renter_id']}")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error deleting shard from renter: {str(e)}")
+        
+        # Remove file from shard_locations
+        del shard_locations[filename]
+        
+        return {"message": f"File '{filename}' and all its shards deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error in delete process: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000) 

@@ -1,14 +1,54 @@
 import requests
 import os
 from pathlib import Path
+import logging
+from cryptography.fernet import Fernet
+import base64
+import hashlib
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class StorageClient:
     def __init__(self, server_url):
         """Initialize the client with the server URL."""
         self.server_url = server_url
+        # Generate a key for encryption/decryption
+        self.key = self._generate_key()
+        logger.info("Client initialized with encryption key")
+
+    def _generate_key(self):
+        """Generate a key for encryption/decryption."""
+        # Use a fixed password to generate the key (in a real system, this would be user-provided)
+        password = b"mysecretpassword"
+        # Generate a key from the password
+        key = base64.urlsafe_b64encode(hashlib.sha256(password).digest())
+        return Fernet(key)
+
+    def _encrypt_file(self, file_path: str) -> bytes:
+        """Encrypt a file and return the encrypted data."""
+        try:
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+            encrypted_data = self.key.encrypt(file_data)
+            return encrypted_data
+        except Exception as e:
+            logger.error(f"Error encrypting file: {str(e)}")
+            raise
+
+    def _decrypt_file(self, encrypted_data: bytes, output_path: str):
+        """Decrypt data and save it to a file."""
+        try:
+            decrypted_data = self.key.decrypt(encrypted_data)
+            with open(output_path, 'wb') as f:
+                f.write(decrypted_data)
+        except Exception as e:
+            logger.error(f"Error decrypting file: {str(e)}")
+            raise
 
     def upload_file(self, file_path):
-        """Upload a file to the server."""
+        """Upload an encrypted file to the server."""
         try:
             # Remove quotes if present and normalize path
             file_path = file_path.strip('"').strip("'")
@@ -17,18 +57,34 @@ class StorageClient:
             if not os.path.exists(file_path):
                 print(f"File not found at path: {file_path}")
                 return None
-                
-            with open(file_path, 'rb') as f:
+            
+            # Encrypt the file
+            encrypted_data = self._encrypt_file(file_path)
+            
+            # Create a temporary file with encrypted data
+            temp_path = f"{file_path}.enc"
+            with open(temp_path, 'wb') as f:
+                f.write(encrypted_data)
+            
+            # Upload the encrypted file
+            with open(temp_path, 'rb') as f:
                 files = {'file': (os.path.basename(file_path), f)}
                 response = requests.post(f"{self.server_url}/upload/", files=files)
                 response.raise_for_status()
-                return response.json()
+            
+            # Clean up temporary encrypted file
+            os.remove(temp_path)
+            
+            return response.json()
         except Exception as e:
-            print(f"Error uploading file: {str(e)}")
+            logger.error(f"Error uploading file: {str(e)}")
+            # Clean up temporary file if it exists
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.remove(temp_path)
             return None
 
     def download_file(self, filename, output_path):
-        """Download a file from the server."""
+        """Download and decrypt a file from the server."""
         try:
             # Remove quotes if present and normalize path
             output_path = output_path.strip('"').strip("'")
@@ -38,6 +94,7 @@ class StorageClient:
             if os.path.isdir(output_path):
                 output_path = os.path.join(output_path, filename)
             
+            # Download the encrypted file
             response = requests.get(f"{self.server_url}/download/{filename}")
             
             # Handle different error cases
@@ -52,11 +109,24 @@ class StorageClient:
                 print(f"Details: {response.text}")
                 return False
             
-            with open(output_path, 'wb') as f:
-                f.write(response.content)
+            # Decrypt the file
+            self._decrypt_file(response.content, output_path)
+            
+            # Request file deletion from renters
+            try:
+                delete_response = requests.post(
+                    f"{self.server_url}/delete/{filename}"
+                )
+                if delete_response.status_code == 200:
+                    logger.info(f"File {filename} deleted from renters")
+                else:
+                    logger.warning(f"Failed to delete file {filename} from renters")
+            except Exception as e:
+                logger.error(f"Error requesting file deletion: {str(e)}")
+            
             return True
         except Exception as e:
-            print(f"Error downloading file: {str(e)}")
+            logger.error(f"Error downloading file: {str(e)}")
             return False
 
 def main():
@@ -99,7 +169,7 @@ def main():
             output_path = input("Path: ")
             
             if client.download_file(filename, output_path):
-                print("File downloaded successfully!")
+                print("File downloaded and decrypted successfully!")
             else:
                 print("Failed to download file.")
         

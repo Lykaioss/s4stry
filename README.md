@@ -186,6 +186,7 @@ When prompted, enter the server's IP address in this format:
 http://192.168.1.100:8000  # Replace with your server's actual IP
 ```
 
+
 ## Network Setup Requirements
 
 1. All three machines must be on the same network
