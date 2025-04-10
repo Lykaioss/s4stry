@@ -1,6 +1,116 @@
 # Distributed Storage System
 
-This is a distributed storage system that allows you to upload files and store them across multiple machines (renters) in a network.
+A distributed file storage system that splits files into shards and stores them across multiple renters. Built with FastAPI.
+
+## Features
+
+- File sharding and distribution
+- Automatic renter discovery and management
+- Heartbeat system for renter health monitoring
+- Fault tolerance with multiple renters
+- Simple client interface
+
+## Architecture
+
+The system consists of three main components:
+
+1. **Server** (`main.py`):
+   - Manages file sharding and distribution
+   - Maintains list of active renters
+   - Handles file uploads and downloads
+   - Monitors renter health through heartbeats
+
+2. **Renters** (`renter.py`):
+   - Automatically registers with the server
+   - Sends periodic heartbeats to maintain active status
+   - Stores file shards
+   - Provides shard retrieval functionality
+
+3. **Client** (`client.py`):
+   - Simple interface for file operations
+   - Only needs to know the server's address
+   - Handles file uploads and downloads
+
+## Setup
+
+1. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+2. Start the server:
+```bash
+python main.py
+```
+
+3. Start one or more renters:
+```bash
+python renter.py
+```
+
+4. Use the client:
+```bash
+python client.py
+```
+
+## Usage
+
+1. Start the server on one machine:
+```bash
+python main.py
+```
+
+2. Start one or more renters on other machines:
+```bash
+python renter.py
+```
+
+3. Use the client on any machine:
+```bash
+python client.py
+```
+- Enter the server's URL when prompted (e.g., `http://192.168.1.100:8000`)
+- Choose to upload or download files
+- Follow the prompts to complete the operation
+
+## How It Works
+
+1. **Renter Registration**:
+   - Renters automatically register with the server on startup
+   - Each renter gets a unique ID
+   - Renters send periodic heartbeats to maintain active status
+
+2. **File Upload**:
+   - Client sends file to server
+   - Server splits file into shards
+   - Shards are distributed across available renters
+   - Server tracks shard locations
+
+3. **File Download**:
+   - Client requests file from server
+   - Server retrieves shards from renters
+   - Server reconstructs file from shards
+   - Client receives complete file
+
+4. **Renter Management**:
+   - Server tracks active renters through heartbeats
+   - Inactive renters are automatically removed
+   - Shards are redistributed if renters become unavailable
+
+## Requirements
+
+- Python 3.7+
+- FastAPI
+- Uvicorn
+- Requests
+- Python-multipart
+
+## Notes
+
+- The server runs on port 8000
+- Renters run on port 8001
+- Make sure all machines can reach each other on the network
+- The system requires at least one active renter for file operations
 
 ## Project Structure
 
@@ -149,8 +259,4 @@ Distributed Storage System Client
 
 - The system creates two directories automatically:
   - `uploads/` - For temporary file storage on the server
-  - `storage/` - For storing file shards on the renter
-- Make sure you have write permissions in your current directory
-- The system uses these ports:
-  - Server: 8000
-  - Renter: 8001 
+  - `

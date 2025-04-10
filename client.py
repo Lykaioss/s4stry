@@ -3,27 +3,9 @@ import os
 from pathlib import Path
 
 class StorageClient:
-    def __init__(self, server_url, renter_url):
-        """Initialize the client with the server and renter URLs."""
+    def __init__(self, server_url):
+        """Initialize the client with the server URL."""
         self.server_url = server_url
-        self.renter_url = renter_url
-        self.register_renter()
-
-    def register_renter(self):
-        """Register the renter with the server."""
-        try:
-            response = requests.post(
-                f"{self.server_url}/register-renter/",
-                json={
-                    "url": self.renter_url,
-                    "storage_available": 1000000000  # 1GB in bytes
-                }
-            )
-            response.raise_for_status()
-            print("Renter registered successfully!")
-        except Exception as e:
-            print(f"Error registering renter: {str(e)}")
-            print("Continuing anyway...")
 
     def upload_file(self, file_path):
         """Upload a file to the server."""
@@ -63,7 +45,7 @@ class StorageClient:
                 print(f"Error: File '{filename}' not found. Please upload the file first.")
                 return False
             elif response.status_code == 503:
-                print("Error: No renters available. Please register a renter first.")
+                print("Error: No renters available. Please wait for a renter to register.")
                 return False
             elif response.status_code != 200:
                 print(f"Error: Server returned status code {response.status_code}")
@@ -78,18 +60,14 @@ class StorageClient:
             return False
 
 def main():
-    # Get server and renter IPs from user
+    # Get server IP from user
     print("\nWelcome to the Distributed Storage System Client!")
     print("Please enter the IP address of the server machine")
     print("Example: http://192.168.1.100:8000")
     server_url = input("Server URL: ").strip()
     
-    print("\nPlease enter the IP address of the renter machine")
-    print("Example: http://192.168.1.101:8001")
-    renter_url = input("Renter URL: ").strip()
-    
     # Create client instance
-    client = StorageClient(server_url, renter_url)
+    client = StorageClient(server_url)
     
     while True:
         print("\nDistributed Storage System Client")
