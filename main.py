@@ -13,6 +13,7 @@ import math
 import time
 from collections import defaultdict
 import random
+import socket
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -218,6 +219,8 @@ async def upload_file(file: UploadFile = File(...)):
             detail="No renters available. Please wait for a renter to register."
         )
     
+    temp_path = None
+    shards = []
     try:
         # Save the uploaded file temporarily
         temp_path = UPLOAD_DIR / file.filename
@@ -246,13 +249,6 @@ async def upload_file(file: UploadFile = File(...)):
         # Store shard information
         shard_locations[file.filename] = distributed_shards
         
-        # Clean up temporary files
-        os.remove(temp_path)
-        for shard in shards:
-            os.remove(shard)
-        
-        logger.info("File successfully uploaded and distributed with replication")
-        
         return {
             "filename": file.filename,
             "num_shards": num_shards,
@@ -262,14 +258,23 @@ async def upload_file(file: UploadFile = File(...)):
         }
     except Exception as e:
         logger.error(f"Error in upload process: {str(e)}", exc_info=True)
-        # Clean up temporary files if they exist
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
-        if 'shards' in locals():
-            for shard in shards:
-                if os.path.exists(shard):
-                    os.remove(shard)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Clean up temporary files
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                logger.info(f"Cleaned up temporary file: {temp_path}")
+            except Exception as e:
+                logger.error(f"Error cleaning up temporary file {temp_path}: {str(e)}")
+        
+        for shard in shards:
+            if os.path.exists(shard):
+                try:
+                    os.remove(shard)
+                    logger.info(f"Cleaned up shard: {shard}")
+                except Exception as e:
+                    logger.error(f"Error cleaning up shard {shard}: {str(e)}")
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
@@ -379,6 +384,25 @@ async def delete_file(filename: str):
         logger.error(f"Error in delete process: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def get_local_ip():
+    """Get the local IP address of the machine."""
+    try:
+        # Try to get the IP address that can reach the internet
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        # Fallback to localhost
+        return "127.0.0.1"
+
 if __name__ == "__main__":
     import uvicorn
+    local_ip = get_local_ip()
+    print("\nDistributed Storage Server is starting...")
+    print(f"Server will be accessible at:")
+    print(f"Local: http://localhost:8000")
+    print(f"Network: http://{local_ip}:8000")
+    print("\nPress Ctrl+C to stop the server")
     uvicorn.run(app, host="0.0.0.0", port=8000) 

@@ -6,9 +6,11 @@ from cryptography.fernet import Fernet
 import base64
 import hashlib
 import time
+import threading
+from datetime import datetime
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Set up basic console logging
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 class StorageClient:
@@ -18,7 +20,21 @@ class StorageClient:
         if not server_url.startswith(('http://', 'https://')):
             server_url = f"http://{server_url}"
         self.server_url = server_url.rstrip('/')  # Remove trailing slash if present
+        
+        # Create base client directory
+        self.base_dir = Path("S4S_Client")
+        self.base_dir.mkdir(exist_ok=True)
+        
+        # Create downloads directory
+        self.downloads_dir = self.base_dir / "downloads"
+        self.downloads_dir.mkdir(exist_ok=True)
+        
+        # Dictionary to track scheduled retrievals
+        self.scheduled_retrievals = {}
+        
         logger.info(f"Initialized client with server URL: {self.server_url}")
+        logger.info(f"Base directory: {self.base_dir}")
+        logger.info(f"Downloads directory: {self.downloads_dir}")
     
     def generate_key(self, password: str) -> bytes:
         """Generate a Fernet key from a password."""
@@ -44,7 +60,26 @@ class StorageClient:
         with open(output_path, 'wb') as decrypted_file:
             decrypted_file.write(decrypted)
     
-    def upload_file(self, file_path: str) -> None:
+    def schedule_retrieval(self, filename: str, duration_minutes: int) -> None:
+        """Schedule automatic retrieval of a file after specified duration."""
+        def retrieve_after_delay():
+            time.sleep(duration_minutes * 60)  # Convert minutes to seconds
+            try:
+                print(f"\nAutomatically retrieving file: {filename}")
+                self.download_file(filename)
+                # Remove from scheduled retrievals after successful retrieval
+                if filename in self.scheduled_retrievals:
+                    del self.scheduled_retrievals[filename]
+            except Exception as e:
+                print(f"Error during automatic retrieval of {filename}: {str(e)}")
+        
+        # Store the thread in our tracking dictionary
+        thread = threading.Thread(target=retrieve_after_delay, daemon=True)
+        self.scheduled_retrievals[filename] = thread
+        thread.start()
+        print(f"File '{filename}' will be automatically retrieved after {duration_minutes} minutes")
+    
+    def upload_file(self, file_path: str, duration_minutes: int = None) -> None:
         """Upload a file to the storage system."""
         try:
             file_path = Path(file_path)
@@ -74,6 +109,10 @@ class StorageClient:
             logger.info(f"File uploaded successfully: {file_path.name}")
             print(f"File uploaded successfully: {file_path.name}")
             
+            # If duration is specified, schedule automatic retrieval
+            if duration_minutes is not None and duration_minutes > 0:
+                self.schedule_retrieval(file_path.name, duration_minutes)
+            
         except requests.exceptions.RequestException as e:
             logger.error(f"Error uploading file: {str(e)}")
             raise
@@ -81,9 +120,14 @@ class StorageClient:
             logger.error(f"Error in upload process: {str(e)}")
             raise
     
-    def download_file(self, filename: str, output_path: str) -> None:
+    def download_file(self, filename: str, output_path: str = None) -> None:
         """Download a file from the storage system."""
         try:
+            # If no output path provided, use the default downloads directory
+            if not output_path or output_path.strip() == "":
+                output_path = str(self.downloads_dir / filename)
+                print(f"Using default download location: {output_path}")
+            
             # Convert to Path object and normalize
             output_path = Path(output_path.strip('"').strip("'"))
             
@@ -192,14 +236,27 @@ def main():
         
         if choice == "1":
             file_path = input("Enter the path to the file you want to upload: ")
+            while True:
+                try:
+                    duration_input = input("Enter duration in minutes after which to automatically retrieve the file (0 for no auto-retrieval): ").strip()
+                    if not duration_input:
+                        duration_minutes = None
+                        break
+                    duration_minutes = int(duration_input)
+                    if duration_minutes >= 0:
+                        break
+                    print("Duration must be 0 or greater. Please try again.")
+                except ValueError:
+                    print("Please enter a valid number.")
+            
             try:
-                client.upload_file(file_path)
+                client.upload_file(file_path, duration_minutes)
             except Exception as e:
                 print(f"Error: {str(e)}")
         
         elif choice == "2":
             filename = input("Enter the filename to download: ")
-            output_path = input("Enter the path where you want to save the file: ")
+            output_path = input("Enter the path where you want to save the file (press Enter to use default location): ")
             try:
                 client.download_file(filename, output_path)
             except Exception as e:

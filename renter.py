@@ -13,10 +13,22 @@ import threading
 import time
 import socket
 from contextlib import asynccontextmanager
+from datetime import datetime
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Set up basic console logging
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
+
+# Create base renter directory
+BASE_DIR = Path("S4S_Renter")
+BASE_DIR.mkdir(exist_ok=True)
+
+# Create storage directory
+STORAGE_DIR = BASE_DIR / "storage"
+STORAGE_DIR.mkdir(exist_ok=True)
+
+logger.info(f"Base directory: {BASE_DIR}")
+logger.info(f"Storage directory: {STORAGE_DIR}")
 
 # Global variables for the heartbeat thread
 heartbeat_thread = None
@@ -46,10 +58,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create storage directory if it doesn't exist
-STORAGE_DIR = Path("storage")
-STORAGE_DIR.mkdir(exist_ok=True)
-
 # Server configuration
 def get_local_ip():
     """Get the local IP address of the machine."""
@@ -77,6 +85,51 @@ LOCAL_IP = get_local_ip()
 RENTER_URL = f"http://{LOCAL_IP}:8001"
 logger.info(f"Renter will be accessible at: {RENTER_URL}")
 
+# Storage configuration
+MIN_STORAGE_MB = 5  # Minimum storage space in MB
+
+# Get available storage space from user
+while True:
+    try:
+        storage_input = input(f"\nEnter the amount of storage space you want to make available (in MB, minimum {MIN_STORAGE_MB} MB) [Press Enter for minimum]: ").strip()
+        
+        if not storage_input:
+            # Use minimum storage if user hits Enter
+            STORAGE_AVAILABLE_MB = MIN_STORAGE_MB
+            print(f"Using minimum storage space: {MIN_STORAGE_MB} MB")
+            break
+            
+        storage_mb = float(storage_input)
+        if storage_mb <= 0:
+            print("Storage space must be greater than 0. Please try again.")
+            continue
+            
+        if storage_mb < MIN_STORAGE_MB:
+            print(f"Requested storage space is less than minimum ({MIN_STORAGE_MB} MB). Using minimum value.")
+            STORAGE_AVAILABLE_MB = MIN_STORAGE_MB
+        else:
+            STORAGE_AVAILABLE_MB = storage_mb
+            
+        print(f"Making {STORAGE_AVAILABLE_MB} MB available for storage")
+        break
+    except ValueError:
+        print("Please enter a valid number. Example: 10 for 10 MB")
+
+# Create storage blocker file
+STORAGE_BLOCKER_PATH = STORAGE_DIR / "storage_blocker.bin"
+try:
+    # Create a file of the specified size
+    with open(STORAGE_BLOCKER_PATH, 'wb') as f:
+        # Write zeros to create a file of the specified size
+        f.write(b'\0' * int(STORAGE_AVAILABLE_MB * 1024 * 1024))
+    logger.info(f"Created storage blocker file of {STORAGE_AVAILABLE_MB} MB at {STORAGE_BLOCKER_PATH}")
+except Exception as e:
+    logger.error(f"Failed to create storage blocker file: {str(e)}")
+    raise
+
+# Convert MB to bytes for server registration
+STORAGE_AVAILABLE = int(STORAGE_AVAILABLE_MB * 1024 * 1024)
+
 RENTER_ID = str(uuid.uuid4())  # Unique ID for this renter
 HEARTBEAT_INTERVAL = 30  # seconds
 
@@ -85,13 +138,14 @@ def register_with_server():
     try:
         logger.info(f"Registering with server at {SERVER_URL}")
         logger.info(f"Renter URL: {RENTER_URL}")
+        logger.info(f"Storage available: {STORAGE_AVAILABLE:,} bytes")
         
         response = requests.post(
             f"{SERVER_URL}/register-renter/",
             json={
                 "renter_id": RENTER_ID,
                 "url": RENTER_URL,
-                "storage_available": 1000000000  # 1GB in bytes
+                "storage_available": STORAGE_AVAILABLE
             }
         )
         response.raise_for_status()
