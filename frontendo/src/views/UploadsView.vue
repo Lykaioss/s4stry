@@ -1,13 +1,25 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import { useToast } from 'vue-toastification';
+import FileList from '@/components/FileList.vue';
 
 const toast = useToast();
+const files = ref([]);
 const selectedFile = ref(null);
 const fileMeta = ref(null);
 const timeDuration = ref(0);
-const uploadedFiles = ref([]);
 const isRetrieving = ref(false);
+
+const fetchFiles = async () => {
+  try {
+    const response = await fetch('http://localhost:8000/list-files/');
+    const data = await response.json();
+    files.value = data.files;
+  } catch (error) {
+    console.error('Error fetching files:', error);
+    toast.error('Failed to fetch uploaded files');
+  }
+};
 
 const handleFileChange = (e) => {
   selectedFile.value = e.target.files[0];
@@ -15,181 +27,142 @@ const handleFileChange = (e) => {
 
 const uploadFile = async () => {
   if (!selectedFile.value) {
-    toast.error("Please select a file to upload!");
+    toast.error('Please select a file to upload');
     return;
   }
 
-  // Set file metadata after clicking submit
-  fileMeta.value = {
-    name: selectedFile.value.name,
-    size: (selectedFile.value.size / 1024).toFixed(2) + " KB",
-    type: selectedFile.value.type || "Unknown",
-  };
+  const formData = new FormData();
+  formData.append('file', selectedFile.value);
+  formData.append('time_duration', timeDuration.value);
 
   try {
-    const formData = new FormData();
-    formData.append('file', selectedFile.value);
-    formData.append('time_duration', timeDuration.value);
-
     const response = await fetch('http://localhost:8000/upload/', {
       method: 'POST',
-      body: formData,
+      body: formData
     });
 
-    if (!response.ok) {
-      throw new Error('Upload failed');
+    if (response.ok) {
+      await fetchFiles();
+      toast.success(`File "${selectedFile.value.name}" uploaded successfully!`);
+      selectedFile.value = null;
+      timeDuration.value = 0;
+    } else {
+      const errorData = await response.json();
+      toast.error(`Upload failed: ${errorData.detail || 'Unknown error'}`);
     }
-
-    const data = await response.json();
-    uploadedFiles.value.push({
-      filename: data.filename,
-      originalName: data.original_name,
-      uploadTime: new Date().toISOString(),
-      timeDuration: timeDuration.value
-    });
-    
-    toast.success(`✅ ${selectedFile.value.name} uploaded successfully!`);
-    selectedFile.value = null;
-    timeDuration.value = 0;
   } catch (error) {
-    toast.error(`❌ Upload failed: ${error.message}`);
+    console.error('Error uploading file:', error);
+    toast.error(`Upload failed: ${error.message}`);
   }
 };
 
-const retrieveFile = async (filename) => {
+const handleRetrieve = async (filename) => {
   if (isRetrieving.value) return;
-  
+  isRetrieving.value = true;
+
   try {
-    isRetrieving.value = true;
-    const response = await fetch(`http://localhost:8000/download/${filename}`, {
-      method: 'GET',
-    });
-
-    if (!response.ok) {
-      throw new Error('File retrieval failed');
+    const response = await fetch(`http://localhost:8000/download/${filename}`);
+    if (response.ok) {
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      await fetchFiles();
+      toast.success(`File "${filename}" retrieved successfully!`);
+    } else {
+      const errorData = await response.json();
+      toast.error(`Retrieval failed: ${errorData.detail || 'Unknown error'}`);
     }
-
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
-    
-    toast.success('File retrieved successfully!');
   } catch (error) {
-    toast.error(`❌ File retrieval failed: ${error.message}`);
+    console.error('Error retrieving file:', error);
+    toast.error(`Retrieval failed: ${error.message}`);
   } finally {
     isRetrieving.value = false;
   }
 };
 
-// Fetch uploaded files on component mount
-onMounted(async () => {
+const handleDelete = async (filename) => {
   try {
-    const response = await fetch('http://localhost:8000/list-files/');
+    const response = await fetch(`http://localhost:8000/delete/${filename}`, {
+      method: 'POST'
+    });
     if (response.ok) {
-      const data = await response.json();
-      uploadedFiles.value = data.files;
+      await fetchFiles();
+      toast.success(`File "${filename}" deleted successfully!`);
+    } else {
+      const errorData = await response.json();
+      toast.error(`Deletion failed: ${errorData.detail || 'Unknown error'}`);
     }
   } catch (error) {
-    toast.error('Failed to fetch uploaded files');
+    console.error('Error deleting file:', error);
+    toast.error(`Deletion failed: ${error.message}`);
   }
+};
+
+onMounted(() => {
+  fetchFiles();
+  setInterval(fetchFiles, 5000);
 });
 </script>
 
 <template>
-  <div class="bg-[#282828] min-h-screen">
-    <section
-      class="mx-4 md:mx-12 p-6 md:p-10 text-white rounded-lg flex flex-col md:flex-row items-center md:items-start justify-between shadow-lg"
-    >
-      <div class="w-full md:w-1/2">
-        <h1 class="mb-6 text-xl md:text-3xl font-bold text-center md:text-left">
-          🚀 Upload your files and send them into orbit!
-        </h1>
-
-        <div class="space-y-4">
-          <form @submit.prevent="uploadFile" class="flex flex-col space-y-4">
-            <label for="file" class="text-lg">Select a File</label>
+  <div class="min-h-screen bg-[#282828] py-8">
+    <div class="max-w-4xl mx-auto px-4">
+      <h1 class="text-3xl font-bold text-gray-800 mb-8">Distributed Storage System</h1>
+      
+      <!-- File Upload Section -->
+      <div class="bg-[#E4FD75] rounded-lg shadow p-6 mb-8">
+        <h2 class="text-xl font-semibold text-gray-800 mb-4">Upload File</h2>
+        <form @submit.prevent="uploadFile" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">File</label>
             <input
-              id="file"
-              name="file"
               type="file"
-              class="w-full text-sm md:text-base bg-white text-black p-2 rounded-md shadow-md"
               @change="handleFileChange"
+              class="block w-full text-sm text-gray-500
+                file:mr-4 file:py-2 file:px-4
+                file:rounded-full file:border-0
+                file:text-sm file:font-semibold
+                file:bg-[#282828] file:text-blue-700
+                hover:file:bg-blue-100"
             />
-            
-            <div class="flex flex-col space-y-2">
-              <label for="timeDuration" class="text-lg">Auto-Retrieve Duration (minutes)</label>
-              <input
-                id="timeDuration"
-                v-model="timeDuration"
-                type="number"
-                min="0"
-                class="w-full text-sm md:text-base bg-white text-black p-2 rounded-md shadow-md"
-                placeholder="Enter duration in minutes (0 for no auto-retrieve)"
-              />
-            </div>
-
-            <button
-              type="submit"
-              class="bg-secondary px-5 py-3 rounded-md w-full md:w-auto hover:opacity-90 transition-opacity text-white font-semibold text-center"
-            >
-              Upload File 🚀
-            </button>
-          </form>
-        </div>
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Auto-retrieve after (minutes)</label>
+            <input
+              type="number"
+              v-model="timeDuration"
+              min="0"
+              class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            />
+          </div>
+          
+          <button
+            type="submit"
+            :disabled="!selectedFile"
+            class="w-full bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            Upload
+          </button>
+        </form>
       </div>
-
-      <!-- File Metadata Display -->
-      <div
-        v-if="fileMeta"
-        class="mt-6 md:mt-0 w-full md:w-1/3 bg-[#E4FD75] p-4 md:p-6 rounded-md shadow-lg"
-      >
-        <h2 class="text-lg text-[#282828] font-semibold text-center">File Details</h2>
-        <div class="mt-2 text-sm md:text-base text-[#282828]">
-          <p><strong>Name:</strong> {{ fileMeta.name }}</p>
-          <p><strong>Size:</strong> {{ fileMeta.size }}</p>
-          <p><strong>Type:</strong> {{ fileMeta.type }}</p>
-        </div>
+      
+      <!-- File List Section -->
+      <div class="bg-[#E4FD75] rounded-lg shadow p-6">
+        <h2 class="text-xl font-semibold text-gray-800 mb-4">Uploaded Files</h2>
+        <FileList
+          :files="files"
+          @retrieve="handleRetrieve"
+          @delete="handleDelete"
+        />
       </div>
-    </section>
-
-    <!-- Uploaded Files List -->
-    <section class="mx-4 md:mx-12 mt-8 p-6 bg-white rounded-lg shadow-lg">
-      <h2 class="text-2xl font-bold text-[#282828] mb-4">Uploaded Files</h2>
-      <div class="overflow-x-auto">
-        <table class="min-w-full bg-white">
-          <thead>
-            <tr>
-              <th class="px-6 py-3 border-b-2 border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Original Name</th>
-              <th class="px-6 py-3 border-b-2 border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Upload Time</th>
-              <th class="px-6 py-3 border-b-2 border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Auto-Retrieve Duration</th>
-              <th class="px-6 py-3 border-b-2 border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="file in uploadedFiles" :key="file.filename" class="hover:bg-gray-100">
-              <td class="px-6 py-4 border-b border-gray-200">{{ file.originalName }}</td>
-              <td class="px-6 py-4 border-b border-gray-200">{{ new Date(file.uploadTime).toLocaleString() }}</td>
-              <td class="px-6 py-4 border-b border-gray-200">{{ file.timeDuration }} minutes</td>
-              <td class="px-6 py-4 border-b border-gray-200">
-                <button
-                  @click="retrieveFile(file.filename)"
-                  :disabled="isRetrieving"
-                  class="bg-secondary text-white px-4 py-2 rounded-md hover:opacity-90 transition-opacity"
-                >
-                  {{ isRetrieving ? 'Retrieving...' : 'Retrieve' }}
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+    </div>
   </div>
 </template>
 
