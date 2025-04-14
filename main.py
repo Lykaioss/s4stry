@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
@@ -15,6 +15,9 @@ from collections import defaultdict
 import random
 import socket
 import asyncio
+from datetime import datetime, timedelta
+from pydantic import BaseModel
+from blockchain.contract_handler import ContractHandler
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -31,9 +34,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize blockchain handler
+contract_handler = ContractHandler(
+    contract_address="YOUR_CONTRACT_ADDRESS",  # Replace with deployed contract address
+    abi_path="contracts/StoragePayment.json"  # Path to compiled contract ABI
+)
+
 # Create upload directory if it doesn't exist
 UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
+
+# Create temp directory for file operations
+TEMP_DIR = UPLOAD_DIR / "temp"
+TEMP_DIR.mkdir(exist_ok=True, parents=True)
 
 # Store information about registered renters
 renters: Dict[str, dict] = {}
@@ -44,6 +57,9 @@ shard_locations: Dict[str, List[dict]] = {}
 # Store rack information
 racks: Dict[str, Set[str]] = defaultdict(set)  # rack_id -> set of renter_ids
 
+# Store blockchain agreements
+blockchain_agreements: Dict[str, str] = {}  # filename -> agreement_id
+
 # Sharding configuration
 SHARD_SIZE = 1024 * 1024  # 1MB per shard
 MIN_SHARDS = 3  # Minimum number of shards to create
@@ -52,6 +68,17 @@ RACK_COUNT = 3  # Number of racks in the system
 
 # Renter management
 RENTER_TIMEOUT = 60  # seconds
+
+class FileInfo(BaseModel):
+    filename: str
+    original_name: str
+    upload_time: str
+    time_duration: int
+    client_address: str
+    payment_amount: int
+
+# Store file information
+file_info: Dict[str, FileInfo] = {}
 
 def assign_rack(renter_id: str) -> str:
     """Assign a renter to a rack."""
@@ -148,7 +175,7 @@ def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict
                 with open(shard_path, 'rb') as f:
                     files = {"file": (shard_name, f)}
                     response = requests.post(
-                        f"{renter['url']}/store-shard/",
+                        f"http://{renter['address']}:{renter['port']}/store-shard/",
                         files=files,
                         timeout=30
                     )
@@ -178,15 +205,44 @@ async def read_root():
 async def register_renter(renter_info: dict):
     """Register a new renter."""
     try:
-        renter_id = renter_info.get("renter_id", str(uuid.uuid4()))
+        # Validate required fields
+        required_fields = ["address", "port", "storage_available", "blockchain_address"]
+        for field in required_fields:
+            if field not in renter_info:
+                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+        
+        # Get renter information
+        address = renter_info["address"]
+        port = renter_info["port"]
+        storage_available = renter_info["storage_available"]
+        blockchain_address = renter_info["blockchain_address"]
+        
+        # Register renter on blockchain
+        if not contract_handler.register_renter(blockchain_address):
+            raise HTTPException(status_code=500, detail="Failed to register renter on blockchain")
+        
+        # Generate new renter ID
+        renter_id = str(uuid.uuid4())
+        
+        # Store renter information
         renters[renter_id] = {
-            "url": renter_info["url"],
-            "storage_available": renter_info["storage_available"],
+            "address": address,
+            "port": port,
+            "storage_available": storage_available,
             "last_heartbeat": time.time(),
-            "rack_id": assign_rack(renter_id)
+            "rack_id": assign_rack(renter_id),
+            "blockchain_address": blockchain_address
         }
-        logger.info(f"Renter registered successfully with ID: {renter_id} in rack {renters[renter_id]['rack_id']}")
-        return {"renter_id": renter_id, "message": "Renter registered successfully"}
+        
+        logger.info(f"Renter registered successfully with ID: {renter_id}")
+        logger.info(f"Renter details: {renters[renter_id]}")
+        
+        return {
+            "renter_id": renter_id,
+            "message": "Renter registered successfully",
+            "rack_id": renters[renter_id]["rack_id"]
+        }
+        
     except Exception as e:
         logger.error(f"Error registering renter: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -206,27 +262,31 @@ async def receive_heartbeat(heartbeat_info: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload/")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    time_duration: int = Form(0),
+    client_address: str = Form(...),
+    payment_amount: int = Form(...)
+):
     """Upload a file and distribute it across renters with replication."""
-    cleanup_inactive_renters()
-    
-    logger.info(f"Starting upload process for file: {file.filename}")
-    logger.info(f"Current renters: {renters}")
-    
-    if not renters:
-        logger.error("No renters available")
-        raise HTTPException(
-            status_code=503,
-            detail="No renters available. Please wait for a renter to register."
-        )
-    
-    temp_path = None
-    shards = []
     try:
+        # Register client on blockchain if not already registered
+        if not contract_handler.register_client(client_address):
+            raise HTTPException(status_code=500, detail="Failed to register client on blockchain")
+        
+        # Create storage agreement on blockchain
+        success, agreement_id = contract_handler.create_storage_agreement(
+            client_address=client_address,
+            renter_address=renters[list(renters.keys())[0]]["blockchain_address"],  # Use first available renter
+            amount=payment_amount,
+            duration=time_duration
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to create storage agreement")
+        
         # Save the uploaded file temporarily
         temp_path = UPLOAD_DIR / file.filename
-        logger.info(f"Saving uploaded file temporarily to: {temp_path}")
-        
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
@@ -234,48 +294,43 @@ async def upload_file(file: UploadFile = File(...)):
         file_size = os.path.getsize(temp_path)
         num_shards = max(MIN_SHARDS, math.ceil(file_size / SHARD_SIZE))
         
-        # Calculate actual replication factor based on available renters
-        actual_replication = min(REPLICATION_FACTOR, len(renters))
-        logger.info(f"Splitting file into {num_shards} shards with replication factor {actual_replication}")
-        
         # Split file into shards
         shards = split_file_into_shards(temp_path, num_shards)
-        logger.info(f"Created {len(shards)} shards")
         
-        # Distribute shards to renters with replication
-        logger.info("Starting shard distribution to renters")
+        # Distribute shards to renters
         distributed_shards = distribute_shards_to_renters(shards, file.filename)
-        logger.info(f"Successfully distributed shards: {distributed_shards}")
         
         # Store shard information
         shard_locations[file.filename] = distributed_shards
         
+        # Store file information
+        file_info[file.filename] = FileInfo(
+            filename=file.filename,
+            original_name=file.filename,
+            upload_time=datetime.now().isoformat(),
+            time_duration=time_duration,
+            client_address=client_address,
+            payment_amount=payment_amount
+        )
+        
+        # Store blockchain agreement
+        blockchain_agreements[file.filename] = agreement_id
+        
+        # Clean up temporary files
+        os.remove(temp_path)
+        for shard in shards:
+            os.remove(shard)
+        
         return {
             "filename": file.filename,
             "num_shards": num_shards,
-            "replication_factor": actual_replication,
-            "shard_size": SHARD_SIZE,
-            "message": f"File uploaded and distributed successfully with replication factor {actual_replication}"
+            "agreement_id": agreement_id,
+            "message": "File uploaded and distributed successfully"
         }
-    except Exception as e:
-        logger.error(f"Error in upload process: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Clean up temporary files
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-                logger.info(f"Cleaned up temporary file: {temp_path}")
-            except Exception as e:
-                logger.error(f"Error cleaning up temporary file {temp_path}: {str(e)}")
         
-        for shard in shards:
-            if os.path.exists(shard):
-                try:
-                    os.remove(shard)
-                    logger.info(f"Cleaned up shard: {shard}")
-                except Exception as e:
-                    logger.error(f"Error cleaning up shard {shard}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in upload process: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
@@ -284,7 +339,12 @@ async def download_file(filename: str):
         # Check if file exists in our records
         if filename not in shard_locations:
             raise HTTPException(status_code=404, detail="File not found")
-
+        
+        # Get file info
+        file_info_obj = file_info.get(filename)
+        if not file_info_obj:
+            raise HTTPException(status_code=404, detail="File information not found")
+        
         # Create a temporary file for reconstruction
         temp_file = UPLOAD_DIR / f"reconstructed_{filename}"
         
@@ -314,12 +374,8 @@ async def download_file(filename: str):
                 
                 try:
                     # Request shard from renter
-                    renter_url = renter['url']
-                    if not renter_url.startswith('http'):
-                        renter_url = f"http://{renter_url}"
-                    
                     response = requests.get(
-                        f"{renter_url}/retrieve-shard/",
+                        f"http://{renter['address']}:{renter['port']}/retrieve-shard/",
                         params={'filename': shard['shard_path']},
                         timeout=30
                     )
@@ -340,10 +396,16 @@ async def download_file(filename: str):
                     status_code=500,
                     detail="Failed to retrieve all shards"
                 )
-
+        
+        # Release payment to renter
+        agreement_id = blockchain_agreements.get(filename)
+        if agreement_id:
+            if not contract_handler.release_payment(file_info_obj.client_address, agreement_id):
+                logger.warning(f"Failed to release payment for agreement {agreement_id}")
+        
         # Schedule file deletion after 30 seconds
         asyncio.create_task(delete_temp_file_after_delay(temp_file, 30))
-
+        
         # Return the reconstructed file
         return FileResponse(
             path=temp_file,
@@ -390,7 +452,7 @@ async def delete_file(filename: str):
                 continue
             try:
                 response = requests.post(
-                    f"{renter['url']}/delete-shard/",
+                    f"http://{renter['address']}:{renter['port']}/delete-shard/",
                     params={'filename': shard_info['shard_path']},
                     timeout=30
                 )
