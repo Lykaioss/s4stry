@@ -1,0 +1,38 @@
+function displayFiles(files) {
+    const fileList = document.getElementById('fileList');
+    fileList.innerHTML = '';
+    
+    files.forEach(file => {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        
+        const fileInfo = document.createElement('div');
+        fileInfo.className = 'file-info';
+        fileInfo.innerHTML = `
+            <span class="file-name">${file.original_name}</span>
+            <span class="file-time">Uploaded: ${new Date(file.upload_time).toLocaleString()}</span>
+            ${file.time_duration > 0 ? `<span class="file-duration">Auto-retrieve after: ${file.time_duration} minutes</span>` : ''}
+        `;
+        
+        const fileActions = document.createElement('div');
+        fileActions.className = 'file-actions';
+        
+        const retrieveButton = document.createElement('button');
+        retrieveButton.className = 'retrieve-btn';
+        retrieveButton.textContent = file.is_retrieved ? 'Retrieved' : 'Retrieve';
+        retrieveButton.disabled = file.is_retrieved;
+        retrieveButton.onclick = () => retrieveFile(file.filename);
+        
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'delete-btn';
+        deleteButton.textContent = 'Delete';
+        deleteButton.onclick = () => deleteFile(file.filename);
+        
+        fileActions.appendChild(retrieveButton);
+        fileActions.appendChild(deleteButton);
+        
+        fileItem.appendChild(fileInfo);
+        fileItem.appendChild(fileActions);
+        fileList.appendChild(fileItem);
+    });
+} 

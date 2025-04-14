@@ -82,7 +82,8 @@ SERVER_URL = input("Server URL: ").strip()
 
 # Get the local IP address
 LOCAL_IP = get_local_ip()
-RENTER_URL = f"http://{LOCAL_IP}:8001"
+RENTER_PORT = 8001  # Default port for renter
+RENTER_URL = f"http://{LOCAL_IP}:{RENTER_PORT}"
 logger.info(f"Renter will be accessible at: {RENTER_URL}")
 
 # Storage configuration
@@ -99,73 +100,73 @@ while True:
             print(f"Using minimum storage space: {MIN_STORAGE_MB} MB")
             break
             
-        storage_mb = float(storage_input)
-        if storage_mb <= 0:
-            print("Storage space must be greater than 0. Please try again.")
+        storage_available = int(storage_input)
+        if storage_available < MIN_STORAGE_MB:
+            print(f"Storage space must be at least {MIN_STORAGE_MB} MB")
             continue
-            
-        if storage_mb < MIN_STORAGE_MB:
-            print(f"Requested storage space is less than minimum ({MIN_STORAGE_MB} MB). Using minimum value.")
-            STORAGE_AVAILABLE_MB = MIN_STORAGE_MB
-        else:
-            STORAGE_AVAILABLE_MB = storage_mb
-            
-        print(f"Making {STORAGE_AVAILABLE_MB} MB available for storage")
+        STORAGE_AVAILABLE_MB = storage_available
         break
     except ValueError:
-        print("Please enter a valid number. Example: 10 for 10 MB")
+        print("Please enter a valid number")
 
-# Create storage blocker file
-STORAGE_BLOCKER_PATH = STORAGE_DIR / "storage_blocker.bin"
-try:
-    # Create a file of the specified size
-    with open(STORAGE_BLOCKER_PATH, 'wb') as f:
-        # Write zeros to create a file of the specified size
-        f.write(b'\0' * int(STORAGE_AVAILABLE_MB * 1024 * 1024))
-    logger.info(f"Created storage blocker file of {STORAGE_AVAILABLE_MB} MB at {STORAGE_BLOCKER_PATH}")
-except Exception as e:
-    logger.error(f"Failed to create storage blocker file: {str(e)}")
-    raise
+# Convert MB to bytes
+STORAGE_AVAILABLE = STORAGE_AVAILABLE_MB * 1024 * 1024
 
-# Convert MB to bytes for server registration
-STORAGE_AVAILABLE = int(STORAGE_AVAILABLE_MB * 1024 * 1024)
-
-RENTER_ID = str(uuid.uuid4())  # Unique ID for this renter
-HEARTBEAT_INTERVAL = 30  # seconds
+# Global variables
+renter_id = None
 
 def register_with_server():
-    """Register this renter with the server."""
+    """Register this renter with the main server."""
+    global renter_id
     try:
+        # Format the renter information
+        renter_info = {
+            "address": LOCAL_IP,
+            "port": RENTER_PORT,
+            "storage_available": STORAGE_AVAILABLE
+        }
+        
         logger.info(f"Registering with server at {SERVER_URL}")
-        logger.info(f"Renter URL: {RENTER_URL}")
-        logger.info(f"Storage available: {STORAGE_AVAILABLE:,} bytes")
+        logger.info(f"Renter info: {renter_info}")
         
         response = requests.post(
             f"{SERVER_URL}/register-renter/",
-            json={
-                "renter_id": RENTER_ID,
-                "url": RENTER_URL,
-                "storage_available": STORAGE_AVAILABLE
-            }
+            json=renter_info,
+            timeout=30
         )
         response.raise_for_status()
-        logger.info("Successfully registered with server")
+        
+        data = response.json()
+        renter_id = data["renter_id"]
+        logger.info(f"Successfully registered with server. Renter ID: {renter_id}")
+        logger.info(f"Renter details: {data}")
+        
     except Exception as e:
-        logger.error(f"Failed to register with server: {str(e)}")
+        logger.error(f"Error registering with server: {str(e)}")
+        raise
 
 def send_heartbeat():
-    """Send periodic heartbeat to server to maintain active status."""
+    """Send periodic heartbeats to the server."""
     while not stop_heartbeat.is_set():
         try:
-            response = requests.post(
-                f"{SERVER_URL}/heartbeat/",
-                json={"renter_id": RENTER_ID}
-            )
-            response.raise_for_status()
-            logger.debug("Heartbeat sent successfully")
+            if renter_id:
+                heartbeat_info = {
+                    "renter_id": renter_id,
+                    "address": LOCAL_IP,
+                    "port": RENTER_PORT,
+                    "storage_available": STORAGE_AVAILABLE
+                }
+                
+                response = requests.post(
+                    f"{SERVER_URL}/heartbeat/",
+                    json=heartbeat_info,
+                    timeout=30
+                )
+                response.raise_for_status()
+                logger.info("Heartbeat sent successfully")
         except Exception as e:
-            logger.error(f"Failed to send heartbeat: {str(e)}")
-        time.sleep(HEARTBEAT_INTERVAL)
+            logger.error(f"Error sending heartbeat: {str(e)}")
+        time.sleep(30)  # Send heartbeat every 30 seconds
 
 @app.get("/")
 async def read_root():
@@ -173,14 +174,22 @@ async def read_root():
     return {
         "status": "healthy",
         "message": "Distributed Storage Renter is running",
-        "renter_id": RENTER_ID,
+        "renter_id": renter_id,
         "renter_url": RENTER_URL
     }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "message": "Renter is running"}
 
 @app.post("/store-shard/")
 async def store_shard(file: UploadFile = File(...)):
     """Store a shard of a file."""
     try:
+        # Create storage directory if it doesn't exist
+        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        
         file_path = STORAGE_DIR / file.filename
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)

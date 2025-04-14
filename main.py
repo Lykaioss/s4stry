@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
@@ -14,6 +14,9 @@ import time
 from collections import defaultdict
 import random
 import socket
+import asyncio
+from datetime import datetime, timedelta
+from pydantic import BaseModel
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +35,11 @@ app.add_middleware(
 
 # Create upload directory if it doesn't exist
 UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
+
+# Create temp directory for file operations
+TEMP_DIR = UPLOAD_DIR / "temp"
+TEMP_DIR.mkdir(exist_ok=True, parents=True)
 
 # Store information about registered renters
 renters: Dict[str, dict] = {}
@@ -51,6 +58,15 @@ RACK_COUNT = 3  # Number of racks in the system
 
 # Renter management
 RENTER_TIMEOUT = 60  # seconds
+
+class FileInfo(BaseModel):
+    filename: str
+    original_name: str
+    upload_time: str
+    time_duration: int
+
+# Store file information
+file_info: Dict[str, FileInfo] = {}
 
 def assign_rack(renter_id: str) -> str:
     """Assign a renter to a rack."""
@@ -131,36 +147,51 @@ def split_file_into_shards(file_path: Path, num_shards: int) -> List[Path]:
     return shards
 
 def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict]:
-    """Distribute shards and their replicas across renters."""
-    distributed_shards = []
-    num_shards = len(shards)
+    """Distribute shards to renters with replication."""
+    cleanup_inactive_renters()
     
-    for i, shard_path in enumerate(shards):
-        # Get renters for this shard and its replicas
-        shard_renters = get_renters_for_shard(i, num_shards)
+    if not renters:
+        raise HTTPException(
+            status_code=503,
+            detail="No renters available. Please wait for a renter to register."
+        )
+    
+    distributed_shards = []
+    for shard_index, shard_path in enumerate(shards):
+        # Get renters for this shard
+        shard_renters = get_renters_for_shard(shard_index, len(shards))
         
         for replica_index, renter_id in enumerate(shard_renters):
-            renter = renters[renter_id]
-            shard_name = f"shard_{i}_replica_{replica_index}_{filename}"
+            renter = renters.get(renter_id)
+            if not renter:
+                logger.warning(f"Renter {renter_id} not found, skipping")
+                continue
+                
+            shard_name = f"shard_{shard_index}_replica_{replica_index}_{filename}"
             
             try:
+                # Send shard to renter
                 with open(shard_path, 'rb') as f:
-                    files = {"file": (shard_name, f)}
+                    files = {'file': (shard_name, f)}
                     response = requests.post(
-                        f"{renter['url']}/store-shard/",
+                        f"http://{renter['address']}:{renter['port']}/store-shard/",
                         files=files,
                         timeout=30
                     )
                     response.raise_for_status()
                 
+                # Store shard information
                 distributed_shards.append({
-                    "renter_id": renter_id,
-                    "shard_path": shard_name,
-                    "shard_index": i,
-                    "replica_index": replica_index
+                    'renter_id': renter_id,
+                    'shard_path': shard_name,
+                    'shard_index': shard_index,
+                    'replica_index': replica_index
                 })
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Error sending shard to renter: {str(e)}")
+                
+                logger.info(f"Successfully sent shard {shard_name} to renter {renter_id} at {renter['address']}:{renter['port']}")
+                
+            except Exception as e:
+                logger.error(f"Error sending shard to renter {renter_id}: {str(e)}")
                 raise HTTPException(
                     status_code=500,
                     detail=f"Failed to send shard to renter: {str(e)}"
@@ -177,15 +208,47 @@ async def read_root():
 async def register_renter(renter_info: dict):
     """Register a new renter."""
     try:
-        renter_id = renter_info.get("renter_id", str(uuid.uuid4()))
+        # Validate required fields
+        required_fields = ["address", "port", "storage_available"]
+        for field in required_fields:
+            if field not in renter_info:
+                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+        
+        # Get renter information
+        address = renter_info["address"]
+        port = renter_info["port"]
+        storage_available = renter_info["storage_available"]
+        
+        # Check if renter already exists with same address and port
+        for existing_id, existing_renter in renters.items():
+            if existing_renter["address"] == address and existing_renter["port"] == port:
+                logger.warning(f"Renter already exists with address {address} and port {port}")
+                return {
+                    "renter_id": existing_id,
+                    "message": "Renter already registered",
+                    "rack_id": existing_renter["rack_id"]
+                }
+        
+        # Generate new renter ID
+        renter_id = str(uuid.uuid4())
+        
+        # Store renter information
         renters[renter_id] = {
-            "url": renter_info["url"],
-            "storage_available": renter_info["storage_available"],
+            "address": address,
+            "port": port,
+            "storage_available": storage_available,
             "last_heartbeat": time.time(),
             "rack_id": assign_rack(renter_id)
         }
-        logger.info(f"Renter registered successfully with ID: {renter_id} in rack {renters[renter_id]['rack_id']}")
-        return {"renter_id": renter_id, "message": "Renter registered successfully"}
+        
+        logger.info(f"Renter registered successfully with ID: {renter_id}")
+        logger.info(f"Renter details: {renters[renter_id]}")
+        
+        return {
+            "renter_id": renter_id,
+            "message": "Renter registered successfully",
+            "rack_id": renters[renter_id]["rack_id"]
+        }
     except Exception as e:
         logger.error(f"Error registering renter: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -194,158 +257,311 @@ async def register_renter(renter_info: dict):
 async def receive_heartbeat(heartbeat_info: dict):
     """Receive a heartbeat from a renter."""
     try:
+        # Validate required fields
+        required_fields = ["renter_id", "address", "port"]
+        for field in required_fields:
+            if field not in heartbeat_info:
+                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+        
         renter_id = heartbeat_info["renter_id"]
-        if renter_id in renters:
-            renters[renter_id]["last_heartbeat"] = time.time()
-            return {"message": "Heartbeat received"}
-        else:
-            raise HTTPException(status_code=404, detail="Renter not found")
+        address = heartbeat_info["address"]
+        port = heartbeat_info["port"]
+        
+        if renter_id not in renters:
+            # If renter not found, try to register it
+            return await register_renter(heartbeat_info)
+        
+        # Update renter information
+        renters[renter_id].update({
+            "last_heartbeat": time.time(),
+            "address": address,
+            "port": port
+        })
+        
+        # Update storage available if provided
+        if "storage_available" in heartbeat_info:
+            renters[renter_id]["storage_available"] = heartbeat_info["storage_available"]
+        
+        logger.info(f"Heartbeat received from renter {renter_id}")
+        return {"message": "Heartbeat received"}
+        
     except Exception as e:
         logger.error(f"Error processing heartbeat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload/")
-async def upload_file(file: UploadFile = File(...)):
-    """Upload a file and distribute it across renters with replication."""
-    cleanup_inactive_renters()
-    
-    logger.info(f"Starting upload process for file: {file.filename}")
-    logger.info(f"Current renters: {renters}")
-    
-    if not renters:
-        logger.error("No renters available")
-        raise HTTPException(
-            status_code=503,
-            detail="No renters available. Please wait for a renter to register."
-        )
-    
-    temp_path = None
-    shards = []
+async def upload_file(
+    file: UploadFile = File(...),
+    time_duration: int = Form(0)
+):
     try:
+        # Generate a unique filename
+        file_extension = file.filename.split('.')[-1] if '.' in file.filename else ''
+        unique_filename = f"{uuid.uuid4()}.{file_extension}"
+        file_path = TEMP_DIR / unique_filename
+
         # Save the uploaded file temporarily
-        temp_path = UPLOAD_DIR / file.filename
-        logger.info(f"Saving uploaded file temporarily to: {temp_path}")
-        
-        with open(temp_path, "wb") as buffer:
+        with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
-        # Calculate number of shards based on file size
-        file_size = os.path.getsize(temp_path)
+
+        # Calculate number of shards needed
+        file_size = os.path.getsize(file_path)
         num_shards = max(MIN_SHARDS, math.ceil(file_size / SHARD_SIZE))
-        
-        # Calculate actual replication factor based on available renters
-        actual_replication = min(REPLICATION_FACTOR, len(renters))
-        logger.info(f"Splitting file into {num_shards} shards with replication factor {actual_replication}")
-        
+
         # Split file into shards
-        shards = split_file_into_shards(temp_path, num_shards)
-        logger.info(f"Created {len(shards)} shards")
-        
-        # Distribute shards to renters with replication
-        logger.info("Starting shard distribution to renters")
-        distributed_shards = distribute_shards_to_renters(shards, file.filename)
-        logger.info(f"Successfully distributed shards: {distributed_shards}")
-        
-        # Store shard information
-        shard_locations[file.filename] = distributed_shards
-        
-        return {
-            "filename": file.filename,
-            "num_shards": num_shards,
-            "replication_factor": actual_replication,
-            "shard_size": SHARD_SIZE,
-            "message": f"File uploaded and distributed successfully with replication factor {actual_replication}"
-        }
-    except Exception as e:
-        logger.error(f"Error in upload process: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
+        shards = split_file_into_shards(file_path, num_shards)
+
+        # Distribute shards to renters
+        shard_info = distribute_shards_to_renters(shards, unique_filename)
+
+        # Store shard locations
+        shard_locations[unique_filename] = shard_info
+
+        # Store file info
+        file_info[unique_filename] = FileInfo(
+            filename=unique_filename,
+            original_name=file.filename,
+            upload_time=datetime.now().isoformat(),
+            time_duration=time_duration
+        )
+
+        # Schedule auto-retrieval if time_duration is set
+        if time_duration > 0:
+            asyncio.create_task(schedule_auto_retrieval(unique_filename, time_duration))
+
         # Clean up temporary files
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-                logger.info(f"Cleaned up temporary file: {temp_path}")
-            except Exception as e:
-                logger.error(f"Error cleaning up temporary file {temp_path}: {str(e)}")
-        
+        os.remove(file_path)
         for shard in shards:
-            if os.path.exists(shard):
-                try:
-                    os.remove(shard)
-                    logger.info(f"Cleaned up shard: {shard}")
-                except Exception as e:
-                    logger.error(f"Error cleaning up shard {shard}: {str(e)}")
+            os.remove(shard)
+
+        return {
+            "status": "success",
+            "message": "File uploaded successfully",
+            "filename": unique_filename,
+            "original_name": file.filename,
+            "shard_count": num_shards,
+            "shard_info": shard_info
+        }
+
+    except Exception as e:
+        logger.error(f"Error uploading file: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error uploading file: {str(e)}"
+        )
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
-    """Download a file by reconstructing it from shards."""
-    cleanup_inactive_renters()
-    
+    """Download a file by reassembling its shards."""
     if filename not in shard_locations:
-        logger.error(f"File not found: {filename}")
-        raise HTTPException(
-            status_code=404, 
-            detail=f"File '{filename}' not found. Please upload the file first."
-        )
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Create a temporary directory for reassembly
+    temp_dir = UPLOAD_DIR / "temp" / str(uuid.uuid4())
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    shard_paths = []
+    output_path = None
     
     try:
-        # Create a temporary file for reconstruction
-        temp_path = UPLOAD_DIR / f"temp_{filename}"
-        
-        # Check if we have any renters
-        if not renters:
-            logger.error("No renters available")
-            raise HTTPException(
-                status_code=503,
-                detail="No renters available. Please wait for a renter to register."
-            )
-        
-        # Group shards by index
-        shards_by_index = defaultdict(list)
+        # Store original filename before any deletions
+        original_filename = file_info[filename].original_name
+
+        # Download shards from renters
         for shard_info in shard_locations[filename]:
-            shards_by_index[shard_info['shard_index']].append(shard_info)
-        
-        # Collect shards from renters in order, trying replicas if needed
-        with open(temp_path, 'wb') as outfile:
-            for shard_index in sorted(shards_by_index.keys()):
-                shard_retrieved = False
-                for shard_info in shards_by_index[shard_index]:
-                    if shard_retrieved:
-                        break
-                    renter = renters.get(shard_info['renter_id'])
-                    if not renter:
-                        continue
-                    try:
-                        response = requests.get(
-                            f"{renter['url']}/retrieve-shard/",
-                            params={'filename': shard_info['shard_path']},
-                            timeout=30
-                        )
-                        response.raise_for_status()
-                        outfile.write(response.content)
-                        shard_retrieved = True
-                        logger.info(f"Retrieved shard {shard_info['shard_path']} from renter {shard_info['renter_id']}")
-                    except requests.exceptions.RequestException as e:
-                        logger.warning(f"Failed to retrieve shard {shard_info['shard_path']} from renter {shard_info['renter_id']}: {str(e)}")
-                
-                if not shard_retrieved:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to retrieve shard {shard_index} from any renter"
-                    )
-        
-        # Return the reconstructed file
-        return FileResponse(
-            path=temp_path,
-            filename=filename,
-            media_type='application/octet-stream'
+            renter_id = shard_info["renter_id"]
+            renter = renters.get(renter_id)
+            if not renter:
+                continue
+
+            shard_path = temp_dir / f"shard_{shard_info['shard_index']}"
+            response = requests.get(
+                f"http://{renter['address']}:{renter['port']}/retrieve-shard/",
+                params={"filename": shard_info['shard_path']},
+                timeout=30
+            )
+            if response.status_code == 200:
+                with open(shard_path, "wb") as f:
+                    f.write(response.content)
+                shard_paths.append(shard_path)
+                logger.info(f"Successfully downloaded shard {shard_info['shard_path']} from renter {renter_id}")
+
+        if not shard_paths:
+            raise HTTPException(status_code=404, detail="No shards available")
+
+        # Reassemble the file
+        output_path = temp_dir / filename
+        with open(output_path, "wb") as outfile:
+            for shard_path in sorted(shard_paths):
+                with open(shard_path, "rb") as infile:
+                    outfile.write(infile.read())
+        logger.info(f"Successfully reassembled file {filename}")
+
+        # Verify the file exists before returning
+        if not output_path.exists():
+            raise HTTPException(status_code=500, detail="Failed to create output file")
+
+        # Delete shards from renters after successful download
+        for shard_info in shard_locations[filename]:
+            renter = renters.get(shard_info['renter_id'])
+            if not renter:
+                continue
+            try:
+                response = requests.post(
+                    f"http://{renter['address']}:{renter['port']}/delete-shard/",
+                    params={'filename': shard_info['shard_path']},
+                    timeout=30
+                )
+                response.raise_for_status()
+                logger.info(f"Deleted shard {shard_info['shard_path']} from renter {shard_info['renter_id']}")
+            except Exception as e:
+                logger.error(f"Error deleting shard from renter: {str(e)}")
+
+        # Remove file from shard_locations and file_info to prevent auto-retrieval
+        if filename in shard_locations:
+            del shard_locations[filename]
+        if filename in file_info:
+            del file_info[filename]
+
+        # Create a response with background cleanup
+        response = FileResponse(
+            path=str(output_path),
+            filename=original_filename,
+            media_type="application/octet-stream",
+            background=None  # Disable background task to prevent premature cleanup
         )
+
+        # Clean up shards but keep the output file
+        for shard_path in shard_paths:
+            if os.path.exists(shard_path):
+                os.remove(shard_path)
+
+        # Return the response
+        return response
+
     except Exception as e:
-        logger.error(f"Error in download process: {str(e)}")
-        # Clean up temporary file if it exists
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
+        logger.error(f"Error downloading file: {str(e)}")
+        # Clean up on error
+        try:
+            for shard_path in shard_paths:
+                if os.path.exists(shard_path):
+                    os.remove(shard_path)
+            if output_path and os.path.exists(output_path):
+                os.remove(output_path)
+            if os.path.exists(temp_dir):
+                os.rmdir(temp_dir)
+        except Exception as cleanup_error:
+            logger.error(f"Error cleaning up: {str(cleanup_error)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+async def schedule_auto_retrieval(filename: str, duration_minutes: int):
+    """Schedule automatic file retrieval after specified duration."""
+    try:
+        # Convert minutes to seconds and wait
+        await asyncio.sleep(duration_minutes * 60)
+        
+        # Check if file still exists
+        if filename not in file_info:
+            logger.warning(f"File {filename} not found for auto-retrieval")
+            return
+            
+        logger.info(f"Starting auto-retrieval for file {filename}")
+        
+        # Create a temporary directory for the download
+        temp_dir = UPLOAD_DIR / "temp" / str(uuid.uuid4())
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # Download shards from renters
+            shard_paths = []
+            for shard_info in shard_locations[filename]:
+                renter_id = shard_info["renter_id"]
+                renter = renters.get(renter_id)
+                if not renter:
+                    continue
+
+                shard_path = temp_dir / f"shard_{shard_info['shard_index']}"
+                response = requests.get(
+                    f"http://{renter['address']}:{renter['port']}/retrieve-shard/",
+                    params={"filename": shard_info['shard_path']},
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    with open(shard_path, "wb") as f:
+                        f.write(response.content)
+                    shard_paths.append(shard_path)
+                    logger.info(f"Successfully downloaded shard {shard_info['shard_path']} from renter {renter_id}")
+
+            if not shard_paths:
+                logger.error(f"No shards available for auto-retrieval of {filename}")
+                return
+
+            # Reassemble the file
+            output_path = temp_dir / filename
+            with open(output_path, "wb") as outfile:
+                for shard_path in sorted(shard_paths):
+                    with open(shard_path, "rb") as infile:
+                        outfile.write(infile.read())
+            logger.info(f"Successfully reassembled file {filename} for auto-retrieval")
+            
+            # Move the file to the uploads directory
+            final_path = UPLOAD_DIR / file_info[filename].original_name
+            shutil.move(str(output_path), str(final_path))
+            logger.info(f"Successfully moved auto-retrieved file to {final_path}")
+            
+            # Delete shards from renters after successful auto-retrieval
+            for shard_info in shard_locations[filename]:
+                renter = renters.get(shard_info['renter_id'])
+                if not renter:
+                    continue
+                try:
+                    response = requests.post(
+                        f"http://{renter['address']}:{renter['port']}/delete-shard/",
+                        params={'filename': shard_info['shard_path']},
+                        timeout=30
+                    )
+                    response.raise_for_status()
+                    logger.info(f"Deleted shard {shard_info['shard_path']} from renter {shard_info['renter_id']}")
+                except Exception as e:
+                    logger.error(f"Error deleting shard from renter: {str(e)}")
+
+            # Remove file from shard_locations and file_info
+            if filename in shard_locations:
+                del shard_locations[filename]
+            if filename in file_info:
+                del file_info[filename]
+            
+        finally:
+            # Clean up temporary files
+            try:
+                for shard_path in shard_paths:
+                    if os.path.exists(shard_path):
+                        os.remove(shard_path)
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                if os.path.exists(temp_dir):
+                    os.rmdir(temp_dir)
+            except Exception as e:
+                logger.error(f"Error cleaning up temporary files during auto-retrieval: {str(e)}")
+                
+    except Exception as e:
+        logger.error(f"Error in auto-retrieval of {filename}: {str(e)}")
+
+@app.get("/list-files/")
+async def list_files():
+    """Return a list of all uploaded files with their metadata."""
+    return {
+        "files": [
+            {
+                "filename": info.filename,
+                "original_name": info.original_name,
+                "upload_time": info.upload_time,
+                "time_duration": info.time_duration,
+                "is_retrieved": filename not in shard_locations  # If file is not in shard_locations, it has been retrieved
+            }
+            for filename, info in file_info.items()
+        ]
+    }
 
 @app.post("/delete/{filename}")
 async def delete_file(filename: str):
