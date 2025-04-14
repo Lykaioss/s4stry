@@ -218,7 +218,7 @@ def main():
     
     # Get server URL
     while True:
-        server_url = input("Enter the server URL (e.g., 192.168.1.100:8000): ").strip()
+        server_url = input("Enter the server URL (e.g., 192.168.1.100:8000): ").strip() or "http://192.168.0.217:8000"
         if server_url:
             break
         print("Server URL cannot be empty. Please try again.")

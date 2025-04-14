@@ -14,6 +14,7 @@ import time
 from collections import defaultdict
 import random
 import socket
+import asyncio
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -278,74 +279,96 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
-    """Download a file by reconstructing it from shards."""
-    cleanup_inactive_renters()
-    
-    if filename not in shard_locations:
-        logger.error(f"File not found: {filename}")
-        raise HTTPException(
-            status_code=404, 
-            detail=f"File '{filename}' not found. Please upload the file first."
-        )
-    
+    """Download a file by retrieving and reconstructing its shards."""
     try:
+        # Check if file exists in our records
+        if filename not in shard_locations:
+            raise HTTPException(status_code=404, detail="File not found")
+
         # Create a temporary file for reconstruction
-        temp_path = UPLOAD_DIR / f"temp_{filename}"
+        temp_file = UPLOAD_DIR / f"reconstructed_{filename}"
         
-        # Check if we have any renters
-        if not renters:
-            logger.error("No renters available")
-            raise HTTPException(
-                status_code=503,
-                detail="No renters available. Please wait for a renter to register."
-            )
-        
-        # Group shards by index
-        shards_by_index = defaultdict(list)
-        for shard_info in shard_locations[filename]:
-            shards_by_index[shard_info['shard_index']].append(shard_info)
-        
-        # Collect shards from renters in order, trying replicas if needed
-        with open(temp_path, 'wb') as outfile:
-            for shard_index in sorted(shards_by_index.keys()):
-                shard_retrieved = False
-                for shard_info in shards_by_index[shard_index]:
-                    if shard_retrieved:
-                        break
-                    renter = renters.get(shard_info['renter_id'])
-                    if not renter:
-                        continue
-                    try:
-                        response = requests.get(
-                            f"{renter['url']}/retrieve-shard/",
-                            params={'filename': shard_info['shard_path']},
-                            timeout=30
-                        )
-                        response.raise_for_status()
-                        outfile.write(response.content)
-                        shard_retrieved = True
-                        logger.info(f"Retrieved shard {shard_info['shard_path']} from renter {shard_info['renter_id']}")
-                    except requests.exceptions.RequestException as e:
-                        logger.warning(f"Failed to retrieve shard {shard_info['shard_path']} from renter {shard_info['renter_id']}: {str(e)}")
+        # Reconstruct the file from shards
+        with open(temp_file, 'wb') as reconstructed_file:
+            # Get all shards for this file
+            shards = shard_locations[filename]
+            
+            # Sort shards by shard_index and replica_index
+            shards.sort(key=lambda x: (x['shard_index'], x['replica_index']))
+            
+            # Track which shards we've successfully retrieved
+            retrieved_shards = set()
+            
+            # Try to get each shard from its renters
+            for shard in shards:
+                shard_index = shard['shard_index']
+                if shard_index in retrieved_shards:
+                    continue
                 
-                if not shard_retrieved:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to retrieve shard {shard_index} from any renter"
+                renter_id = shard['renter_id']
+                renter = renters.get(renter_id)
+                
+                if not renter:
+                    logger.warning(f"Renter {renter_id} not found, trying next replica")
+                    continue
+                
+                try:
+                    # Request shard from renter
+                    renter_url = renter['url']
+                    if not renter_url.startswith('http'):
+                        renter_url = f"http://{renter_url}"
+                    
+                    response = requests.get(
+                        f"{renter_url}/retrieve-shard/",
+                        params={'filename': shard['shard_path']},
+                        timeout=30
                     )
-        
+                    response.raise_for_status()
+                    
+                    # Write shard to reconstructed file
+                    reconstructed_file.write(response.content)
+                    retrieved_shards.add(shard_index)
+                    logger.info(f"Successfully retrieved shard {shard['shard_path']} from renter {renter_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Error retrieving shard from renter {renter_id}: {str(e)}")
+                    continue
+            
+            # Check if we got all shards
+            if len(retrieved_shards) != len(set(s['shard_index'] for s in shards)):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to retrieve all shards"
+                )
+
+        # Schedule file deletion after 30 seconds
+        asyncio.create_task(delete_temp_file_after_delay(temp_file, 30))
+
         # Return the reconstructed file
         return FileResponse(
-            path=temp_path,
+            path=temp_file,
             filename=filename,
             media_type='application/octet-stream'
         )
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in download process: {str(e)}")
-        # Clean up temporary file if it exists
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error downloading file: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to download file: {str(e)}"
+        )
+
+async def delete_temp_file_after_delay(file_path: Path, delay_seconds: int):
+    """Delete a temporary file after a specified delay."""
+    try:
+        await asyncio.sleep(delay_seconds)
+        if file_path.exists():
+            file_path.unlink()
+            logger.info(f"Deleted temporary file: {file_path}")
+    except Exception as e:
+        logger.error(f"Error deleting temporary file {file_path}: {str(e)}")
 
 @app.post("/delete/{filename}")
 async def delete_file(filename: str):

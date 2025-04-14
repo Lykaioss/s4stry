@@ -78,7 +78,7 @@ def get_local_ip():
 print("\nWelcome to the Distributed Storage Renter!")
 print("Please enter the IP address of the server machine")
 print("Example: http://192.168.1.100:8000")
-SERVER_URL = input("Server URL: ").strip()
+SERVER_URL = input("Server URL: ").strip() or "http://192.168.0.217:8000"
 
 # Get the local IP address
 LOCAL_IP = get_local_ip()
