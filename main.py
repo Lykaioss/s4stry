@@ -15,12 +15,19 @@ from collections import defaultdict
 import random
 import socket
 import asyncio
+from blockchain import router as blockchain_router
+from blockchain import Blockchain, Wallet, Miner, Transaction
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Distributed Storage Server")
+# Initialize blockchain components
+blockchain = Blockchain.load_from_file()
+wallet = Wallet(blockchain)
+miner = Miner(blockchain, wallet)
+
+app = FastAPI(title="S4S File Sharing with Sabudhana Blockchain")
 
 # Enable CORS
 app.add_middleware(
@@ -38,6 +45,9 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # Store information about registered renters
 renters: Dict[str, dict] = {}
 
+# Store information about registered clients
+clients: Dict[str, dict] = {}
+
 # Store information about file shards
 shard_locations: Dict[str, List[dict]] = {}
 
@@ -52,6 +62,9 @@ RACK_COUNT = 3  # Number of racks in the system
 
 # Renter management
 RENTER_TIMEOUT = 60  # seconds
+
+# Include blockchain router
+app.include_router(blockchain_router, prefix="/blockchain")
 
 def assign_rack(renter_id: str) -> str:
     """Assign a renter to a rack."""
@@ -170,25 +183,90 @@ def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict
     return distributed_shards
 
 @app.get("/")
-async def read_root():
-    """Health check endpoint."""
-    return {"status": "healthy", "message": "Distributed Storage Server is running"}
+async def root():
+    return {
+        "message": "Welcome to S4S File Sharing with Sabudhana Blockchain",
+        "status": "running",
+        "blockchain": {
+            "height": len(blockchain.chain),
+            "pending_transactions": len(blockchain.pending_transactions),
+            "is_valid": blockchain.is_chain_valid()
+        }
+    }
 
 @app.post("/register-renter/")
 async def register_renter(renter_info: dict):
-    """Register a new renter."""
+    """Register a new renter and create a blockchain account."""
     try:
         renter_id = renter_info.get("renter_id", str(uuid.uuid4()))
+        
+        # Create blockchain account for renter
+        try:
+            address = wallet.create_account(renter_id)
+            # Add initial balance of 1000 sabudhana
+            initial_tx = Transaction(
+                "SYSTEM",
+                address,
+                1000.0,
+                time.time(),
+                {"type": "initial_balance", "user_type": "renter"}
+            )
+            blockchain.add_transaction(initial_tx)
+            print(f"Created blockchain account for renter {renter_id}: {address}")
+        except ValueError as e:
+            print(f"Error creating blockchain account for renter: {e}")
+        
         renters[renter_id] = {
             "url": renter_info["url"],
             "storage_available": renter_info["storage_available"],
             "last_heartbeat": time.time(),
-            "rack_id": assign_rack(renter_id)
+            "rack_id": assign_rack(renter_id),
+            "blockchain_address": address
         }
         logger.info(f"Renter registered successfully with ID: {renter_id} in rack {renters[renter_id]['rack_id']}")
-        return {"renter_id": renter_id, "message": "Renter registered successfully"}
+        return {
+            "renter_id": renter_id,
+            "blockchain_address": address,
+            "message": "Renter registered successfully"
+        }
     except Exception as e:
         logger.error(f"Error registering renter: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/register-client/")
+async def register_client(client_info: dict):
+    """Register a new client and create a blockchain account."""
+    try:
+        client_id = client_info.get("client_id", str(uuid.uuid4()))
+        
+        # Create blockchain account for client
+        try:
+            address = wallet.create_account(client_id)
+            # Add initial balance of 1000 sabudhana
+            initial_tx = Transaction(
+                "SYSTEM",
+                address,
+                1000.0,
+                time.time(),
+                {"type": "initial_balance", "user_type": "client"}
+            )
+            blockchain.add_transaction(initial_tx)
+            print(f"Created blockchain account for client {client_id}: {address}")
+        except ValueError as e:
+            print(f"Error creating blockchain account for client: {e}")
+        
+        clients[client_id] = {
+            "last_activity": time.time(),
+            "blockchain_address": address
+        }
+        logger.info(f"Client registered successfully with ID: {client_id}")
+        return {
+            "client_id": client_id,
+            "blockchain_address": address,
+            "message": "Client registered successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error registering client: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/heartbeat/")
@@ -206,9 +284,15 @@ async def receive_heartbeat(heartbeat_info: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload/")
-async def upload_file(file: UploadFile = File(...)):
-    """Upload a file and distribute it across renters with replication."""
+async def upload_file(file: UploadFile = File(...), client_id: str = None):
+    """Upload a file and create storage contracts with renters."""
     cleanup_inactive_renters()
+    
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Client ID is required")
+    
+    if client_id not in clients:
+        raise HTTPException(status_code=404, detail="Client not found")
     
     logger.info(f"Starting upload process for file: {file.filename}")
     logger.info(f"Current renters: {renters}")
@@ -242,10 +326,44 @@ async def upload_file(file: UploadFile = File(...)):
         shards = split_file_into_shards(temp_path, num_shards)
         logger.info(f"Created {len(shards)} shards")
         
-        # Distribute shards to renters with replication
-        logger.info("Starting shard distribution to renters")
-        distributed_shards = distribute_shards_to_renters(shards, file.filename)
-        logger.info(f"Successfully distributed shards: {distributed_shards}")
+        # Create storage contracts and distribute shards
+        distributed_shards = []
+        for shard in shards:
+            shard_renters = get_renters_for_shard(len(distributed_shards), num_shards)
+            for renter_id in shard_renters:
+                # Create storage contract for each shard-renter pair
+                contract_id = wallet.create_storage_contract(
+                    client_id,
+                    renter_id,
+                    file_size / num_shards,  # Size of each shard
+                    3600  # 1 hour duration
+                )
+                
+                # Store shard with renter
+                renter = renters[renter_id]
+                shard_name = f"shard_{len(distributed_shards)}_{file.filename}"
+                
+                try:
+                    with open(shard, 'rb') as f:
+                        files = {"file": (shard_name, f)}
+                        response = requests.post(
+                            f"{renter['url']}/store-shard/",
+                            files=files,
+                            timeout=30
+                        )
+                        response.raise_for_status()
+                    
+                    distributed_shards.append({
+                        "renter_id": renter_id,
+                        "shard_path": shard_name,
+                        "contract_id": contract_id
+                    })
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Error sending shard to renter: {str(e)}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to send shard to renter: {str(e)}"
+                    )
         
         # Store shard information
         shard_locations[file.filename] = distributed_shards
@@ -255,6 +373,7 @@ async def upload_file(file: UploadFile = File(...)):
             "num_shards": num_shards,
             "replication_factor": actual_replication,
             "shard_size": SHARD_SIZE,
+            "contracts": [shard["contract_id"] for shard in distributed_shards],
             "message": f"File uploaded and distributed successfully with replication factor {actual_replication}"
         }
     except Exception as e:
@@ -278,87 +397,56 @@ async def upload_file(file: UploadFile = File(...)):
                     logger.error(f"Error cleaning up shard {shard}: {str(e)}")
 
 @app.get("/download/{filename}")
-async def download_file(filename: str):
-    """Download a file by retrieving and reconstructing its shards."""
+async def download_file(filename: str, client_id: str):
+    """Download a file and release payments to renters."""
     try:
-        # Check if file exists in our records
         if filename not in shard_locations:
             raise HTTPException(status_code=404, detail="File not found")
-
+            
+        if client_id not in clients:
+            raise HTTPException(status_code=404, detail="Client not found")
+        
         # Create a temporary file for reconstruction
         temp_file = UPLOAD_DIR / f"reconstructed_{filename}"
         
         # Reconstruct the file from shards
         with open(temp_file, 'wb') as reconstructed_file:
-            # Get all shards for this file
             shards = shard_locations[filename]
             
-            # Sort shards by shard_index and replica_index
-            shards.sort(key=lambda x: (x['shard_index'], x['replica_index']))
-            
-            # Track which shards we've successfully retrieved
-            retrieved_shards = set()
-            
-            # Try to get each shard from its renters
             for shard in shards:
-                shard_index = shard['shard_index']
-                if shard_index in retrieved_shards:
-                    continue
-                
-                renter_id = shard['renter_id']
-                renter = renters.get(renter_id)
-                
+                renter = renters.get(shard['renter_id'])
                 if not renter:
-                    logger.warning(f"Renter {renter_id} not found, trying next replica")
                     continue
                 
                 try:
-                    # Request shard from renter
-                    renter_url = renter['url']
-                    if not renter_url.startswith('http'):
-                        renter_url = f"http://{renter_url}"
-                    
                     response = requests.get(
-                        f"{renter_url}/retrieve-shard/",
+                        f"{renter['url']}/retrieve-shard/",
                         params={'filename': shard['shard_path']},
                         timeout=30
                     )
                     response.raise_for_status()
                     
-                    # Write shard to reconstructed file
                     reconstructed_file.write(response.content)
-                    retrieved_shards.add(shard_index)
-                    logger.info(f"Successfully retrieved shard {shard['shard_path']} from renter {renter_id}")
+                    
+                    # Release payment for this shard
+                    wallet.release_payment(shard['contract_id'])
                     
                 except Exception as e:
-                    logger.error(f"Error retrieving shard from renter {renter_id}: {str(e)}")
+                    logger.error(f"Error retrieving shard from renter: {str(e)}")
                     continue
-            
-            # Check if we got all shards
-            if len(retrieved_shards) != len(set(s['shard_index'] for s in shards)):
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to retrieve all shards"
-                )
-
+        
         # Schedule file deletion after 30 seconds
         asyncio.create_task(delete_temp_file_after_delay(temp_file, 30))
-
-        # Return the reconstructed file
+        
         return FileResponse(
             path=temp_file,
             filename=filename,
             media_type='application/octet-stream'
         )
         
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error downloading file: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to download file: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def delete_temp_file_after_delay(file_path: Path, delay_seconds: int):
     """Delete a temporary file after a specified delay."""

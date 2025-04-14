@@ -8,33 +8,75 @@ import hashlib
 import time
 import threading
 from datetime import datetime
+import uuid
+import random
+import traceback
+import aiohttp
+from blockchain.blockchain import Blockchain
 
 # Set up basic console logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 class StorageClient:
-    def __init__(self, server_url: str):
-        """Initialize the storage client with the server URL."""
-        # Ensure server_url has a scheme
-        if not server_url.startswith(('http://', 'https://')):
-            server_url = f"http://{server_url}"
-        self.server_url = server_url.rstrip('/')  # Remove trailing slash if present
+    def __init__(self, server_url: str = "http://localhost:8000"):
+        """Initialize the client with server URL."""
+        self.server_url = server_url
+        self.client_id = str(uuid.uuid4())
+        self.blockchain = Blockchain()
+        self.blockchain_address = None
+        self.session = None
         
-        # Create base client directory
-        self.base_dir = Path("S4S_Client")
-        self.base_dir.mkdir(exist_ok=True)
+        # Create client directory if it doesn't exist
+        os.makedirs("S4S_Client/downloads", exist_ok=True)
         
-        # Create downloads directory
-        self.downloads_dir = self.base_dir / "downloads"
-        self.downloads_dir.mkdir(exist_ok=True)
+        print(f"\n=== Client Initialized ===")
+        print(f"Client ID: {self.client_id}")
+        print(f"Server URL: {self.server_url}")
         
-        # Dictionary to track scheduled retrievals
-        self.scheduled_retrievals = {}
+    async def start(self):
+        """Start the client session."""
+        self.session = aiohttp.ClientSession()
+        return await self.register_with_server()
         
-        logger.info(f"Initialized client with server URL: {self.server_url}")
-        logger.info(f"Base directory: {self.base_dir}")
-        logger.info(f"Downloads directory: {self.downloads_dir}")
+    async def stop(self):
+        """Stop the client session."""
+        if self.session:
+            await self.session.close()
+    
+    async def register_with_server(self):
+        """Register with the server and create blockchain account."""
+        try:
+            # First, create blockchain account
+            self.blockchain_address = self.blockchain.create_account(self.client_id)
+            if not self.blockchain_address:
+                print("Failed to create blockchain account")
+                return False
+                
+            # Then register with server
+            response = await self.session.post(
+                f"{self.server_url}/register-client/",
+                json={
+                    "client_id": self.client_id,
+                    "blockchain_address": self.blockchain_address
+                }
+            )
+            
+            if response.status == 200:
+                data = await response.json()
+                print(f"\n=== Registration Successful ===")
+                print(f"Client ID: {self.client_id}")
+                print(f"Blockchain Address: {self.blockchain_address}")
+                print(f"Initial Balance: {self.blockchain.initial_balance} sabudhana")
+                return True
+            else:
+                print(f"Failed to register with server: {response.status}")
+                return False
+                
+        except Exception as e:
+            print(f"Error registering with server: {e}")
+            traceback.print_exc()
+            return False
     
     def generate_key(self, password: str) -> bytes:
         """Generate a Fernet key from a password."""
@@ -79,46 +121,97 @@ class StorageClient:
         thread.start()
         print(f"File '{filename}' will be automatically retrieved after {duration_minutes} minutes")
     
-    def upload_file(self, file_path: str, duration_minutes: int = None) -> None:
-        """Upload a file to the storage system."""
+    async def upload_file(self, file_path: str):
+        """Upload a file to the network."""
         try:
-            file_path = Path(file_path)
-            if not file_path.exists():
-                raise FileNotFoundError(f"File not found: {file_path}")
+            if not os.path.exists(file_path):
+                print(f"Error: File not found: {file_path}")
+                return
+
+            # Get file info
+            file_name = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
             
-            # Generate encryption key
-            key = self.generate_key("your-secret-password")  # In production, get this from user input
+            # Calculate storage cost (1 sabudhana per GB per hour)
+            # For demo, we'll use 1 hour duration
+            duration = 3600  # 1 hour in seconds
+            cost_per_gb_hour = 1.0
+            storage_cost = (file_size / (1024 * 1024 * 1024)) * (duration / 3600) * cost_per_gb_hour
             
-            # Create temporary encrypted file
-            temp_encrypted = file_path.parent / f"encrypted_{file_path.name}"
-            self.encrypt_file(file_path, temp_encrypted, key)
+            # Get current balance
+            balance = self.blockchain.get_balance(self.blockchain_address)
             
-            # Upload the encrypted file
-            with open(temp_encrypted, 'rb') as f:
-                files = {'file': (file_path.name, f)}
-                response = requests.post(
-                    f"{self.server_url}/upload/",
-                    files=files,
-                    timeout=30
+            print(f"\n=== File Upload Details ===")
+            print(f"File: {file_name}")
+            print(f"Size: {file_size / (1024 * 1024):.2f} MB")
+            print(f"Duration: {duration / 3600:.2f} hours")
+            print(f"Storage Cost: {storage_cost:.2f} sabudhana")
+            print(f"Current Balance: {balance:.2f} sabudhana")
+            print(f"Remaining Balance: {balance - storage_cost:.2f} sabudhana")
+            
+            # Ask for confirmation
+            confirm = input("\nDo you want to proceed with the upload? (yes/no): ").lower()
+            if confirm != 'yes':
+                print("Upload cancelled.")
+                return
+
+            # Register with server
+            await self.register_with_server()
+
+            # Get available renters
+            renters = await self.get_available_renters()
+            if not renters:
+                print("No renters available")
+                return
+
+            # Split file into shards
+            shards = self.split_file(file_path)
+            print(f"Split file into {len(shards)} shards")
+
+            # Create storage contracts for each shard
+            contracts = []
+            for shard in shards:
+                # Select a random renter
+                renter = random.choice(renters)
+                
+                # Create storage contract
+                contract_id = self.blockchain.create_storage_contract(
+                    self.blockchain_address,
+                    renter['blockchain_address'],
+                    len(shard),
+                    duration,
+                    storage_cost / len(shards)  # Split cost among shards
                 )
-                response.raise_for_status()
-            
-            # Clean up temporary file
-            os.remove(temp_encrypted)
-            
-            logger.info(f"File uploaded successfully: {file_path.name}")
-            print(f"File uploaded successfully: {file_path.name}")
-            
-            # If duration is specified, schedule automatic retrieval
-            if duration_minutes is not None and duration_minutes > 0:
-                self.schedule_retrieval(file_path.name, duration_minutes)
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error uploading file: {str(e)}")
-            raise
+                
+                if not contract_id:
+                    print("Failed to create storage contract")
+                    return
+                    
+                contracts.append({
+                    'contract_id': contract_id,
+                    'renter': renter,
+                    'shard': shard
+                })
+
+            # Send shards to renters
+            for contract in contracts:
+                success = await self.send_shard_to_renter(
+                    contract['renter'],
+                    contract['shard'],
+                    file_name,
+                    contract['contract_id']
+                )
+                if not success:
+                    print(f"Failed to send shard to renter {contract['renter']['id']}")
+                    return
+
+            print(f"\nFile '{file_name}' uploaded successfully!")
+            print(f"Storage Cost: {storage_cost:.2f} sabudhana")
+            print(f"New Balance: {self.blockchain.get_balance(self.blockchain_address):.2f} sabudhana")
+
         except Exception as e:
-            logger.error(f"Error in upload process: {str(e)}")
-            raise
+            print(f"Error uploading file: {e}")
+            traceback.print_exc()
     
     def download_file(self, filename: str, output_path: str = None) -> None:
         """Download a file from the storage system."""
@@ -154,6 +247,7 @@ class StorageClient:
             # Download the encrypted file
             response = requests.get(
                 f"{self.server_url}/download/{filename}",
+                params={'client_id': self.client_id},
                 timeout=30
             )
             response.raise_for_status()
@@ -212,62 +306,63 @@ class StorageClient:
             logger.error(f"Error in download process: {str(e)}")
             raise
 
-def main():
-    """Main function to run the client."""
-    print("Welcome to the Distributed Storage Client!")
-    
-    # Get server URL
-    while True:
-        server_url = input("Enter the server URL (e.g., 192.168.1.100:8000): ").strip() or "http://192.168.0.217:8000"
-        if server_url:
-            break
-        print("Server URL cannot be empty. Please try again.")
-    
+async def main():
+    # Get server URL from user
+    server_url = input("Enter server URL (default: http://localhost:8000): ").strip()
+    if not server_url:
+        server_url = "http://localhost:8000"
+        
     # Initialize client
     client = StorageClient(server_url)
     
-    while True:
-        print("\nOptions:")
-        print("1. Upload a file")
-        print("2. Download a file")
-        print("3. Exit")
-        
-        choice = input("Enter your choice (1-3): ")
-        
-        if choice == "1":
-            file_path = input("Enter the path to the file you want to upload: ")
-            while True:
-                try:
-                    duration_input = input("Enter duration in minutes after which to automatically retrieve the file (0 for no auto-retrieval): ").strip()
-                    if not duration_input:
-                        duration_minutes = None
-                        break
-                    duration_minutes = int(duration_input)
-                    if duration_minutes >= 0:
-                        break
-                    print("Duration must be 0 or greater. Please try again.")
-                except ValueError:
-                    print("Please enter a valid number.")
+    try:
+        # Start client session and register
+        if not await client.start():
+            print("Failed to start client. Exiting...")
+            return
             
-            try:
-                client.upload_file(file_path, duration_minutes)
-            except Exception as e:
-                print(f"Error: {str(e)}")
-        
-        elif choice == "2":
-            filename = input("Enter the filename to download: ")
-            output_path = input("Enter the path where you want to save the file (press Enter to use default location): ")
-            try:
-                client.download_file(filename, output_path)
-            except Exception as e:
-                print(f"Error: {str(e)}")
-        
-        elif choice == "3":
-            print("Goodbye!")
-            break
-        
-        else:
-            print("Invalid choice. Please try again.")
+        while True:
+            print("\n=== S4S Client Menu ===")
+            print("1. Upload file")
+            print("2. Download file")
+            print("3. View balance")
+            print("4. View transactions")
+            print("5. Exit")
+            
+            choice = input("\nEnter your choice (1-5): ")
+            
+            if choice == "1":
+                file_path = input("Enter file path to upload: ")
+                await client.upload_file(file_path)
+                
+            elif choice == "2":
+                filename = input("Enter filename to download: ")
+                output_path = input("Enter output path (press Enter for default): ")
+                if output_path:
+                    client.download_file(filename, output_path)
+                else:
+                    client.download_file(filename)
+                    
+            elif choice == "3":
+                balance = client.blockchain.get_balance(client.blockchain_address)
+                print(f"\nCurrent Balance: {balance} sabudhana")
+                
+            elif choice == "4":
+                client.blockchain.print_blockchain_status()
+                
+            elif choice == "5":
+                print("Exiting...")
+                break
+                
+            else:
+                print("Invalid choice. Please try again.")
+                
+    except Exception as e:
+        print(f"Error in main loop: {e}")
+        traceback.print_exc()
+    finally:
+        await client.stop()
 
 if __name__ == "__main__":
-    main() 
+    import asyncio
+    asyncio.run(main()) 
