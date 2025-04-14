@@ -6,7 +6,7 @@ import os
 import requests
 from pathlib import Path
 import json
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 import uuid
 import logging
 import math
@@ -39,7 +39,11 @@ UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
 
 # Create temp directory for file operations
 TEMP_DIR = UPLOAD_DIR / "temp"
-TEMP_DIR.mkdir(exist_ok=True, parents=True)
+TEMP_DIR.mkdir(exist_ok=True)
+
+# Create keys directory if it doesn't exist
+KEYS_DIR = Path("keys")
+KEYS_DIR.mkdir(exist_ok=True)
 
 # Store information about registered renters
 renters: Dict[str, dict] = {}
@@ -58,6 +62,9 @@ RACK_COUNT = 3  # Number of racks in the system
 
 # Renter management
 RENTER_TIMEOUT = 60  # seconds
+
+# Store encryption keys
+encryption_keys: Dict[str, Dict[str, str]] = {}
 
 class FileInfo(BaseModel):
     filename: str
@@ -292,7 +299,9 @@ async def receive_heartbeat(heartbeat_info: dict):
 @app.post("/upload/")
 async def upload_file(
     file: UploadFile = File(...),
-    time_duration: int = Form(0)
+    time_duration: int = Form(0),
+    encryption_key: str = Form(None),
+    iv: str = Form(None)
 ):
     try:
         # Generate a unique filename
@@ -303,7 +312,21 @@ async def upload_file(
         # Save the uploaded file temporarily
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-
+        
+        # Store encryption key and IV if provided
+        if encryption_key and iv:
+            key_data = {
+                "encryption_key": encryption_key,
+                "iv": iv
+            }
+            # Create keys directory if it doesn't exist
+            KEYS_DIR.mkdir(exist_ok=True, parents=True)
+            key_path = KEYS_DIR / f"{unique_filename}.json"
+            with open(key_path, "w") as f:
+                json.dump(key_data, f)
+            encryption_keys[unique_filename] = key_data
+            logger.info(f"Stored encryption key for file {unique_filename} at {key_path}")
+        
         # Calculate number of shards needed
         file_size = os.path.getsize(file_path)
         num_shards = max(MIN_SHARDS, math.ceil(file_size / SHARD_SIZE))
@@ -342,13 +365,35 @@ async def upload_file(
             "shard_count": num_shards,
             "shard_info": shard_info
         }
-
     except Exception as e:
         logger.error(f"Error uploading file: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error uploading file: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/get-key/{filename}")
+async def get_key(filename: str):
+    try:
+        logger.info(f"Getting key for file {filename}")
+        # First check in memory
+        if filename in encryption_keys:
+            logger.info(f"Found key in memory for {filename}")
+            return encryption_keys[filename]
+        
+        # Then check in the keys directory
+        key_path = KEYS_DIR / f"{filename}.json"
+        if not key_path.exists():
+            logger.error(f"Key not found for file {filename} at {key_path}")
+            raise HTTPException(status_code=404, detail="Encryption key not found")
+        
+        with open(key_path, "r") as f:
+            key_data = json.load(f)
+        
+        # Store in memory for future access
+        encryption_keys[filename] = key_data
+        logger.info(f"Found and loaded key from disk for {filename}")
+        return key_data
+    except Exception as e:
+        logger.error(f"Error getting key: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
@@ -397,10 +442,6 @@ async def download_file(filename: str):
                     outfile.write(infile.read())
         logger.info(f"Successfully reassembled file {filename}")
 
-        # Verify the file exists before returning
-        if not output_path.exists():
-            raise HTTPException(status_code=500, detail="Failed to create output file")
-
         # Delete shards from renters after successful download
         for shard_info in shard_locations[filename]:
             renter = renters.get(shard_info['renter_id'])
@@ -423,21 +464,12 @@ async def download_file(filename: str):
         if filename in file_info:
             del file_info[filename]
 
-        # Create a response with background cleanup
-        response = FileResponse(
+        # Return the file
+        return FileResponse(
             path=str(output_path),
             filename=original_filename,
-            media_type="application/octet-stream",
-            background=None  # Disable background task to prevent premature cleanup
+            media_type="application/octet-stream"
         )
-
-        # Clean up shards but keep the output file
-        for shard_path in shard_paths:
-            if os.path.exists(shard_path):
-                os.remove(shard_path)
-
-        # Return the response
-        return response
 
     except Exception as e:
         logger.error(f"Error downloading file: {str(e)}")

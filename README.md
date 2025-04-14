@@ -1,5 +1,6 @@
 # Distributed Storage System
 http://192.168.0.103:8000
+http://192.168.0.145:8000
 A distributed file storage system that splits files into shards and stores them across multiple renters. Built with FastAPI.
 
 ## Features

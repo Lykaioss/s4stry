@@ -1,36 +1,31 @@
 <template>
   <div class="space-y-4">
-    <div v-for="file in files" :key="file.filename" class="bg-white rounded-lg shadow p-4">
-      <div class="flex flex-col space-y-2">
-        <div class="flex flex-col">
-          <span class="text-lg font-semibold text-gray-800">{{ file.original_name }}</span>
-          <span class="text-sm text-gray-500">Uploaded: {{ formatDate(file.upload_time) }}</span>
-          <span v-if="file.time_duration > 0" class="text-sm text-blue-600">
-            Auto-retrieve after: {{ file.time_duration }} minutes
-          </span>
+    <div v-if="files.length === 0" class="text-center text-gray-500 py-4">
+      No files uploaded yet
+    </div>
+    <div v-else class="space-y-2">
+      <div
+        v-for="file in files"
+        :key="file.filename"
+        class="flex items-center justify-between p-4 bg-white rounded-lg shadow"
+      >
+        <div class="flex-1">
+          <h3 class="text-lg font-medium text-gray-800">{{ file.filename }}</h3>
+          <p class="text-sm text-gray-500">
+            Size: {{ file.size }} | Uploaded: {{ formatDate(file.upload_time) }}
+          </p>
         </div>
-        
-        <div class="flex space-x-2">
-          <button
-            @click="retrieveFile(file.filename)"
-            :disabled="file.is_retrieved"
-            :class="[
-              'px-4 py-2 rounded',
-              file.is_retrieved
-                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                : 'bg-blue-500 text-white hover:bg-blue-600'
-            ]"
-          >
-            {{ file.is_retrieved ? 'Retrieved' : 'Retrieve' }}
-          </button>
-          
-          <button
-            @click="deleteFile(file.filename)"
-            class="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
-          >
-            Delete
-          </button>
-        </div>
+        <button
+          @click="$emit('retrieve', file.filename)"
+          :disabled="file.is_retrieved"
+          class="px-4 py-2 rounded text-sm font-medium transition-colors"
+          :class="{
+            'bg-[#282828] text-[#E4FD75] hover:bg-gray-800': !file.is_retrieved,
+            'bg-gray-300 text-gray-500 cursor-not-allowed': file.is_retrieved
+          }"
+        >
+          {{ file.is_retrieved ? 'Retrieved' : 'Retrieve' }}
+        </button>
       </div>
     </div>
   </div>
@@ -46,7 +41,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['retrieve', 'delete'])
+const emit = defineEmits(['retrieve'])
 
 const formatDate = (dateString) => {
   return new Date(dateString).toLocaleString()
