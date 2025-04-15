@@ -2,7 +2,7 @@ import os
 import shutil
 from pathlib import Path
 
-def reset_blockchain():
+def reset_project():
     """Reset the blockchain and clean up related files."""
     # Files to delete
     files_to_delete = [
@@ -50,4 +50,4 @@ def reset_blockchain():
         print(f"Error during reset: {str(e)}")
 
 if __name__ == "__main__":
-    reset_blockchain() 
+    reset_project() 

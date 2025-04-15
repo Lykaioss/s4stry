@@ -29,12 +29,20 @@ class StorageClient:
         self.downloads_dir = self.base_dir / "downloads"
         self.downloads_dir.mkdir(exist_ok=True)
         
+        # Create keys directory
+        self.keys_dir = self.base_dir / "keys"
+        self.keys_dir.mkdir(exist_ok=True)
+        
+        # Load or generate encryption key
+        self.encryption_key = self.load_or_generate_key()
+        
         # Dictionary to track scheduled retrievals
         self.scheduled_retrievals = {}
         
         logger.info(f"Initialized client with server URL: {self.server_url}")
         logger.info(f"Base directory: {self.base_dir}")
         logger.info(f"Downloads directory: {self.downloads_dir}")
+        logger.info(f"Keys directory: {self.keys_dir}")
     
     def generate_key(self, password: str) -> bytes:
         """Generate a Fernet key from a password."""
@@ -59,6 +67,33 @@ class StorageClient:
         decrypted = fernet.decrypt(encrypted)
         with open(output_path, 'wb') as decrypted_file:
             decrypted_file.write(decrypted)
+    
+    def load_or_generate_key(self) -> bytes:
+        """Load existing key or generate a new one."""
+        key_file = self.keys_dir / "encryption.key"
+        
+        if key_file.exists():
+            try:
+                with open(key_file, 'rb') as f:
+                    key = f.read()
+                    logger.info("Loaded existing encryption key")
+                    return key
+            except Exception as e:
+                logger.error(f"Error loading encryption key: {e}")
+                logger.info("Generating new key...")
+        
+        # Generate new key
+        key = self.generate_key("your-secret-password")  # In production, get this from user input
+        
+        # Save the key
+        try:
+            with open(key_file, 'wb') as f:
+                f.write(key)
+            logger.info("New encryption key generated and saved")
+        except Exception as e:
+            logger.error(f"Warning: Failed to save encryption key: {e}")
+        
+        return key
     
     def schedule_retrieval(self, filename: str, duration_minutes: int) -> None:
         """Schedule automatic retrieval of a file after specified duration."""
@@ -86,12 +121,9 @@ class StorageClient:
             if not file_path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
             
-            # Generate encryption key
-            key = self.generate_key("your-secret-password")  # In production, get this from user input
-            
             # Create temporary encrypted file
             temp_encrypted = file_path.parent / f"encrypted_{file_path.name}"
-            self.encrypt_file(file_path, temp_encrypted, key)
+            self.encrypt_file(file_path, temp_encrypted, self.encryption_key)
             
             # Upload the encrypted file
             with open(temp_encrypted, 'rb') as f:
@@ -167,12 +199,9 @@ class StorageClient:
             except PermissionError:
                 raise PermissionError(f"Cannot write to temporary directory: {temp_dir}. Please check permissions.")
             
-            # Generate the same key used for encryption
-            key = self.generate_key("your-secret-password")  # Must match the key used for encryption
-            
-            # Decrypt the file
+            # Decrypt the file using the stored key
             try:
-                self.decrypt_file(temp_encrypted, output_path, key)
+                self.decrypt_file(temp_encrypted, output_path, self.encryption_key)
             except PermissionError:
                 raise PermissionError(f"Cannot write to: {output_path}. Please check permissions.")
             
