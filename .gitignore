@@ -35,3 +35,6 @@ env/
 uploads/
 storage/
 *.log 
+
+node_modules/
+frontendo/node_modules
