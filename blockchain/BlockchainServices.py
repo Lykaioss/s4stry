@@ -15,8 +15,8 @@ class Account:
     def _save_account(self):
         # Read existing accounts
         accounts = {}
-        if os.path.exists('accounts.json'):
-            with open('accounts.json', 'r') as f:
+        if os.path.exists('wallets.json'):
+            with open('wallets.json', 'r') as f:
                 try:
                     accounts = json.load(f)
                 except json.JSONDecodeError:
@@ -26,7 +26,7 @@ class Account:
         accounts[self.address] = self.balance
         
         # Write back to file
-        with open('accounts.json', 'w') as f:
+        with open('wallets.json', 'w') as f:
             json.dump(accounts, f, indent=4)
     
 
@@ -37,8 +37,8 @@ class Account:
         self._save_account()
         # Update receiver.address's balance
         accounts = {}
-        if os.path.exists('accounts.json'):
-            with open('accounts.json', 'r') as f:
+        if os.path.exists('wallets.json'):
+            with open('wallets.json', 'r') as f:
                 try:
                     accounts = json.load(f)
                 except json.JSONDecodeError:
@@ -46,7 +46,7 @@ class Account:
         receiver_balance = accounts.get(receiver.address, 0)
         accounts[receiver.address] = receiver_balance + amount
         
-        with open('accounts.json', 'w') as f:
+        with open('wallets.json', 'w') as f:
             json.dump(accounts, f, indent=4)
 
 
@@ -55,9 +55,9 @@ class Transaction:
         self.sender = sender
         self.receiver = receiver
         self.amount = amount
-        self.receipt = self.create_receipt()
+        self.receipt = self._create_receipt()
     
-    def create_receipt(self):
+    def _create_receipt(self):
         receipt = self.sender + self.receiver + str(self.amount)
         return hashlib.sha256(receipt.encode()).hexdigest() 
 
@@ -69,7 +69,7 @@ class Block:
     def __init__(self, previous_hash: str | None, transactions: list[Transaction] = [], block_size: int = 3):
         self.previous_hash = previous_hash
         self.transactions = transactions
-        self.block_hash = "-1"
+        self.block_hash = ""
         self.block_size = block_size
 
     def calculate_block_hash(self):
