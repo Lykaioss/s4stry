@@ -17,6 +17,7 @@ import socket
 import asyncio
 from blockchain import router as blockchain_router
 from blockchain import Blockchain, Wallet, Miner, Transaction
+import hashlib
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -144,7 +145,7 @@ def split_file_into_shards(file_path: Path, num_shards: int) -> List[Path]:
     
     return shards
 
-def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict]:
+def distribute_shards_to_renters(shards: List[Path], filename: str, client_id: str) -> List[dict]:
     """Distribute shards and their replicas across renters."""
     distributed_shards = []
     num_shards = len(shards)
@@ -158,6 +159,20 @@ def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict
             shard_name = f"shard_{i}_replica_{replica_index}_{filename}"
             
             try:
+                # Create storage contract for this shard
+                contract_id = wallet.create_storage_contract(
+                    client_id,
+                    renter_id,
+                    os.path.getsize(shard_path),
+                    3600  # 1 hour duration
+                )
+                
+                if not contract_id:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to create storage contract"
+                    )
+                
                 with open(shard_path, 'rb') as f:
                     files = {"file": (shard_name, f)}
                     response = requests.post(
@@ -166,13 +181,16 @@ def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict
                         timeout=30
                     )
                     response.raise_for_status()
-                
-                distributed_shards.append({
-                    "renter_id": renter_id,
-                    "shard_path": shard_name,
-                    "shard_index": i,
-                    "replica_index": replica_index
-                })
+                    
+                    # Store shard information with contract ID
+                    shard_info = {
+                        'shard_path': shard_name,
+                        'renter_id': renter_id,
+                        'contract_id': contract_id
+                    }
+                    distributed_shards.append(shard_info)
+                    
+                    logger.info(f"Stored shard {shard_name} with renter {renter_id} and contract {contract_id}")
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error sending shard to renter: {str(e)}")
                 raise HTTPException(
@@ -251,13 +269,15 @@ async def register_client(client_info: dict):
                 {"type": "initial_balance", "user_type": "client"}
             )
             blockchain.add_transaction(initial_tx)
+            blockchain.mine_pending_transactions()  # Mine the transaction immediately
             print(f"Created blockchain account for client {client_id}: {address}")
         except ValueError as e:
             print(f"Error creating blockchain account for client: {e}")
+            raise HTTPException(status_code=400, detail=str(e))
         
         clients[client_id] = {
-            "last_activity": time.time(),
-            "blockchain_address": address
+            "blockchain_address": address,
+            "last_activity": time.time()
         }
         logger.info(f"Client registered successfully with ID: {client_id}")
         return {
@@ -327,74 +347,43 @@ async def upload_file(file: UploadFile = File(...), client_id: str = None):
         logger.info(f"Created {len(shards)} shards")
         
         # Create storage contracts and distribute shards
-        distributed_shards = []
-        for shard in shards:
-            shard_renters = get_renters_for_shard(len(distributed_shards), num_shards)
-            for renter_id in shard_renters:
-                # Create storage contract for each shard-renter pair
-                contract_id = wallet.create_storage_contract(
-                    client_id,
-                    renter_id,
-                    file_size / num_shards,  # Size of each shard
-                    3600  # 1 hour duration
-                )
-                
-                # Store shard with renter
-                renter = renters[renter_id]
-                shard_name = f"shard_{len(distributed_shards)}_{file.filename}"
-                
-                try:
-                    with open(shard, 'rb') as f:
-                        files = {"file": (shard_name, f)}
-                        response = requests.post(
-                            f"{renter['url']}/store-shard/",
-                            files=files,
-                            timeout=30
-                        )
-                        response.raise_for_status()
-                    
-                    distributed_shards.append({
-                        "renter_id": renter_id,
-                        "shard_path": shard_name,
-                        "contract_id": contract_id
-                    })
-                except requests.exceptions.RequestException as e:
-                    logger.error(f"Error sending shard to renter: {str(e)}")
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to send shard to renter: {str(e)}"
-                    )
+        distributed_shards = distribute_shards_to_renters(shards, file.filename, client_id)
         
-        # Store shard information
+        # Store shard locations
         shard_locations[file.filename] = distributed_shards
         
+        # Clean up temporary files
+        try:
+            os.remove(temp_path)
+            for shard in shards:
+                if os.path.exists(shard):
+                    os.remove(shard)
+        except Exception as e:
+            logger.error(f"Error cleaning up temporary files: {str(e)}")
+        
         return {
+            "message": "File uploaded successfully",
             "filename": file.filename,
             "num_shards": num_shards,
             "replication_factor": actual_replication,
-            "shard_size": SHARD_SIZE,
-            "contracts": [shard["contract_id"] for shard in distributed_shards],
-            "message": f"File uploaded and distributed successfully with replication factor {actual_replication}"
+            "contracts": [shard["contract_id"] for shard in distributed_shards]
         }
+        
     except Exception as e:
-        logger.error(f"Error in upload process: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Clean up temporary files
+        logger.error(f"Error uploading file: {str(e)}")
+        # Clean up on error
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
-                logger.info(f"Cleaned up temporary file: {temp_path}")
-            except Exception as e:
-                logger.error(f"Error cleaning up temporary file {temp_path}: {str(e)}")
-        
+            except:
+                pass
         for shard in shards:
             if os.path.exists(shard):
                 try:
                     os.remove(shard)
-                    logger.info(f"Cleaned up shard: {shard}")
-                except Exception as e:
-                    logger.error(f"Error cleaning up shard {shard}: {str(e)}")
+                except:
+                    pass
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/download/{filename}")
 async def download_file(filename: str, client_id: str):
@@ -428,8 +417,16 @@ async def download_file(filename: str, client_id: str):
                     
                     reconstructed_file.write(response.content)
                     
-                    # Release payment for this shard
-                    wallet.release_payment(shard['contract_id'])
+                    # Release payment for this shard using the contract ID
+                    if 'contract_id' in shard:
+                        try:
+                            wallet.release_payment(shard['contract_id'])
+                            # Mine the payment transaction immediately
+                            blockchain.mine_pending_transactions()
+                            logger.info(f"Released payment for contract: {shard['contract_id']}")
+                        except Exception as e:
+                            logger.error(f"Error releasing payment: {str(e)}")
+                            # Continue with download even if payment fails
                     
                 except Exception as e:
                     logger.error(f"Error retrieving shard from renter: {str(e)}")

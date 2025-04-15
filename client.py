@@ -161,9 +161,10 @@ class StorageClient:
     
     def generate_key(self, password: str) -> bytes:
         """Generate a Fernet key from a password."""
-        # Use SHA-256 to hash the password and then base64 encode it
+        # Use SHA-256 to hash the password
         key = hashlib.sha256(password.encode()).digest()
-        return base64.urlsafe_b64encode(key)
+        # Take first 32 bytes and encode as URL-safe base64
+        return base64.urlsafe_b64encode(key[:32])
     
     def encrypt_file(self, input_path: Path, output_path: Path) -> None:
         """Encrypt a file using Fernet."""
@@ -221,11 +222,10 @@ class StorageClient:
             file_name = os.path.basename(file_path)
             file_size = os.path.getsize(file_path)
             
-            # Calculate storage cost (1 sabudhana per GB per hour)
-            # For demo, we'll use 1 hour duration
+            # Calculate storage cost (1 sabudhana for files 1MB or less)
             duration = 3600  # 1 hour in seconds
-            cost_per_gb_hour = 1.0
-            storage_cost = (file_size / (1024 * 1024 * 1024)) * (duration / 3600) * cost_per_gb_hour
+            file_size_mb = file_size / (1024 * 1024)  # Convert to MB
+            storage_cost = 1.0 if file_size_mb <= 1 else (file_size_mb * duration / 3600)
             
             # Get current balance
             balance = self.blockchain.get_balance(self.blockchain_address)
@@ -279,7 +279,14 @@ class StorageClient:
                     print(f"New Balance: {self.blockchain.get_balance(self.blockchain_address):.2f} sabudhana")
                     print(f"Number of shards: {result.get('num_shards', 'unknown')}")
                     print(f"Replication factor: {result.get('replication_factor', 'unknown')}")
-                    print(f"Contract IDs: {', '.join(result.get('contracts', []))}")
+                    contracts = result.get('contracts', [])
+                    if contracts:
+                        print("Contract IDs:")
+                        for contract in contracts:
+                            if isinstance(contract, dict):
+                                print(f"- {contract.get('id', 'Unknown')}")
+                            else:
+                                print(f"- {contract}")
                 elif response.status == 503:
                     print("Error: No renters available. Please try again later.")
                 else:
@@ -369,6 +376,11 @@ class StorageClient:
             
             logger.info(f"File downloaded successfully: {filename}")
             print(f"File downloaded successfully to: {output_path}")
+            
+            # Show client's current balance after retrieval
+            current_balance = self.blockchain.get_balance(self.blockchain_address)
+            print(f"\n=== Balance After Retrieval ===")
+            print(f"Your Current Balance: {current_balance:.2f} sabudhana")
             
         except PermissionError as e:
             logger.error(f"Permission error: {str(e)}")

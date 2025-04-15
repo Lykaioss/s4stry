@@ -14,10 +14,17 @@ import time
 import socket
 from contextlib import asynccontextmanager
 from datetime import datetime
+from blockchain import Blockchain, Wallet
 
 # Set up basic console logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
+
+# Initialize blockchain components
+blockchain = Blockchain.load_from_file()
+wallet = Wallet(blockchain)
+RENTER_USERNAME = "renter"  # Default username for the renter
+wallet.create_account(RENTER_USERNAME)  # Create the renter's account
 
 # Create base renter directory
 BASE_DIR = Path("S4S_Renter")
@@ -150,6 +157,7 @@ def register_with_server():
         )
         response.raise_for_status()
         logger.info("Successfully registered with server")
+            
     except Exception as e:
         logger.error(f"Failed to register with server: {str(e)}")
 
@@ -199,6 +207,15 @@ async def retrieve_shard(filename: str):
             logger.error(f"Shard not found: {filename}")
             raise HTTPException(status_code=404, detail="Shard not found")
         logger.info(f"Retrieved shard: {filename}")
+        
+        # Log balance without affecting core functionality
+        try:
+            current_balance = wallet.get_balance(RENTER_USERNAME)
+            logger.info(f"\n=== Balance After Retrieval ===")
+            logger.info(f"Your Current Balance: {current_balance:.2f} sabudhana")
+        except Exception as e:
+            logger.warning(f"Could not log balance: {str(e)}")
+        
         return FileResponse(path=file_path, filename=filename)
     except Exception as e:
         logger.error(f"Error retrieving shard: {str(e)}")

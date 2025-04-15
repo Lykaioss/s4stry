@@ -60,7 +60,7 @@ class Wallet:
         
         # Update local account balance
         self.accounts[username]['balance'] = blockchain_balance
-        self.save_accounts()
+        self.save_accounts()  # Save after updating balance
         
         print(f"\n=== Account Balance ===")
         print(f"Username: {username}")
@@ -123,6 +123,9 @@ class Wallet:
             price
         )
         
+        if not contract_id:
+            raise ValueError("Failed to create storage contract")
+        
         print(f"\n=== Storage Contract Created ===")
         print(f"Contract ID: {contract_id[:8]}...")
         print(f"Client: {client} ({client_address[:8]}...)")
@@ -149,13 +152,15 @@ class Wallet:
 
     def save_accounts(self):
         """Save accounts to file."""
-        with open('accounts.json', 'w') as f:
+        accounts_path = Path(__file__).parent.parent / 'accounts.json'
+        with open(accounts_path, 'w') as f:
             json.dump(self.accounts, f, indent=4)
 
     def load_accounts(self):
         """Load accounts from file."""
-        if Path('accounts.json').exists():
-            with open('accounts.json', 'r') as f:
+        accounts_path = Path(__file__).parent.parent / 'accounts.json'
+        if accounts_path.exists():
+            with open(accounts_path, 'r') as f:
                 self.accounts = json.load(f)
 
     def get_account_info(self, username: str) -> Dict:

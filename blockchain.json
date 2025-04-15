@@ -1,0 +1,155 @@
+{
+    "chain": [
+        {
+            "index": 0,
+            "timestamp": 1744721599.7261534,
+            "transactions": [],
+            "previous_hash": "0",
+            "nonce": 459,
+            "hash": "00e6b113d956da5ee7c0117dd82f4cca54a953ed5af348b9643f90e09b3ed61c"
+        },
+        {
+            "index": 1,
+            "timestamp": 1744721628.9715064,
+            "transactions": [
+                {
+                    "sender": "SYSTEM",
+                    "receiver": "edf3867ad382bdcaeb4fadf14caaea33db375ea4a62b784f97f5df890e4e3087",
+                    "amount": 1000.0,
+                    "timestamp": 1744721628.9715064,
+                    "data": {
+                        "type": "initial_balance",
+                        "user_type": "new_account"
+                    }
+                }
+            ],
+            "previous_hash": "00e6b113d956da5ee7c0117dd82f4cca54a953ed5af348b9643f90e09b3ed61c",
+            "nonce": 116,
+            "hash": "00f4d239dc8d2800462b6fba9200826e49078e97f1f815e120421dee66ffea56"
+        },
+        {
+            "index": 2,
+            "timestamp": 1744721628.980589,
+            "transactions": [
+                {
+                    "sender": "SYSTEM",
+                    "receiver": "edf3867ad382bdcaeb4fadf14caaea33db375ea4a62b784f97f5df890e4e3087",
+                    "amount": 1000.0,
+                    "timestamp": 1744721628.9795773,
+                    "data": {
+                        "type": "initial_balance",
+                        "user_type": "renter"
+                    }
+                }
+            ],
+            "previous_hash": "00f4d239dc8d2800462b6fba9200826e49078e97f1f815e120421dee66ffea56",
+            "nonce": 424,
+            "hash": "004d414be257e5350e83c204e32cffe33efb92233dd124353757bb4997d321f8"
+        },
+        {
+            "index": 3,
+            "timestamp": 1744721653.6598907,
+            "transactions": [
+                {
+                    "sender": "SYSTEM",
+                    "receiver": "193cfb4275cd9af6d68efd86323311fa148d777685c9af9994693ff3a7beaa98",
+                    "amount": 1000.0,
+                    "timestamp": 1744721653.6598907,
+                    "data": {
+                        "type": "initial_balance",
+                        "user_type": "new_account"
+                    }
+                }
+            ],
+            "previous_hash": "004d414be257e5350e83c204e32cffe33efb92233dd124353757bb4997d321f8",
+            "nonce": 159,
+            "hash": "00400443fb01821f68268c487c2b0226b40fcbc12bf56107746e5a07a22515ad"
+        },
+        {
+            "index": 4,
+            "timestamp": 1744721653.6737354,
+            "transactions": [
+                {
+                    "sender": "SYSTEM",
+                    "receiver": "193cfb4275cd9af6d68efd86323311fa148d777685c9af9994693ff3a7beaa98",
+                    "amount": 1000.0,
+                    "timestamp": 1744721653.6737354,
+                    "data": {
+                        "type": "initial_balance",
+                        "user_type": "client"
+                    }
+                }
+            ],
+            "previous_hash": "00400443fb01821f68268c487c2b0226b40fcbc12bf56107746e5a07a22515ad",
+            "nonce": 150,
+            "hash": "0034f8221e158649f7ee4f50a697c654f83ab921213bb2bb8fe8b8f167ae3acd"
+        }
+    ],
+    "pending_transactions": [
+        {
+            "sender": "193cfb4275cd9af6d68efd86323311fa148d777685c9af9994693ff3a7beaa98",
+            "receiver": "edf3867ad382bdcaeb4fadf14caaea33db375ea4a62b784f97f5df890e4e3087",
+            "amount": 1.1241063475608826e-06,
+            "timestamp": 1744721682.0604477,
+            "data": {
+                "type": "storage_payment",
+                "contract_id": "a77135ad0d029e21f733cf44f79f0287cbdc07dab86c88b9155210856cd3a42b"
+            }
+        },
+        {
+            "sender": "193cfb4275cd9af6d68efd86323311fa148d777685c9af9994693ff3a7beaa98",
+            "receiver": "edf3867ad382bdcaeb4fadf14caaea33db375ea4a62b784f97f5df890e4e3087",
+            "amount": 1.1241063475608826e-06,
+            "timestamp": 1744721682.0690675,
+            "data": {
+                "type": "storage_payment",
+                "contract_id": "40ed8354857c08f12df8b5813352fe3c8195ee912f187d452c004d290326d17a"
+            }
+        },
+        {
+            "sender": "193cfb4275cd9af6d68efd86323311fa148d777685c9af9994693ff3a7beaa98",
+            "receiver": "edf3867ad382bdcaeb4fadf14caaea33db375ea4a62b784f97f5df890e4e3087",
+            "amount": 1.123175024986267e-06,
+            "timestamp": 1744721682.086378,
+            "data": {
+                "type": "storage_payment",
+                "contract_id": "6e421d1e2bccc0af5f18e66f483c542cf15d4111e3c216d3723918b86d46626f"
+            }
+        }
+    ],
+    "storage_contracts": {
+        "a77135ad0d029e21f733cf44f79f0287cbdc07dab86c88b9155210856cd3a42b": {
+            "id": "a77135ad0d029e21f733cf44f79f0287cbdc07dab86c88b9155210856cd3a42b",
+            "client": "193cfb4275cd9af6d68efd86323311fa148d777685c9af9994693ff3a7beaa98",
+            "renter": "edf3867ad382bdcaeb4fadf14caaea33db375ea4a62b784f97f5df890e4e3087",
+            "file_size": 1207,
+            "duration": 3600,
+            "price": 1.1241063475608826e-06,
+            "created_at": 1744721673.8960254,
+            "status": "completed",
+            "payment_released": true
+        },
+        "40ed8354857c08f12df8b5813352fe3c8195ee912f187d452c004d290326d17a": {
+            "id": "40ed8354857c08f12df8b5813352fe3c8195ee912f187d452c004d290326d17a",
+            "client": "193cfb4275cd9af6d68efd86323311fa148d777685c9af9994693ff3a7beaa98",
+            "renter": "edf3867ad382bdcaeb4fadf14caaea33db375ea4a62b784f97f5df890e4e3087",
+            "file_size": 1207,
+            "duration": 3600,
+            "price": 1.1241063475608826e-06,
+            "created_at": 1744721673.9318342,
+            "status": "completed",
+            "payment_released": true
+        },
+        "6e421d1e2bccc0af5f18e66f483c542cf15d4111e3c216d3723918b86d46626f": {
+            "id": "6e421d1e2bccc0af5f18e66f483c542cf15d4111e3c216d3723918b86d46626f",
+            "client": "193cfb4275cd9af6d68efd86323311fa148d777685c9af9994693ff3a7beaa98",
+            "renter": "edf3867ad382bdcaeb4fadf14caaea33db375ea4a62b784f97f5df890e4e3087",
+            "file_size": 1206,
+            "duration": 3600,
+            "price": 1.123175024986267e-06,
+            "created_at": 1744721673.963607,
+            "status": "completed",
+            "payment_released": true
+        }
+    }
+}

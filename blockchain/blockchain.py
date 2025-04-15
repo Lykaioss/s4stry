@@ -44,7 +44,6 @@ class Block:
         self.timestamp = timestamp
         self.transactions = transactions
         self.previous_hash = previous_hash
-        self.nonce = 0
         self.hash = self.calculate_hash()
 
     def calculate_hash(self) -> str:
@@ -52,22 +51,14 @@ class Block:
             'index': self.index,
             'timestamp': self.timestamp,
             'transactions': [tx.to_dict() for tx in self.transactions],
-            'previous_hash': self.previous_hash,
-            'nonce': self.nonce
+            'previous_hash': self.previous_hash
         }, sort_keys=True)
         return hashlib.sha256(block_string.encode()).hexdigest()
-
-    def mine_block(self, difficulty: int):
-        while self.hash[:difficulty] != '0' * difficulty:
-            self.nonce += 1
-            self.hash = self.calculate_hash()
 
 class Blockchain:
     def __init__(self):
         self.chain: List[Block] = []
         self.pending_transactions: List[Transaction] = []
-        self.difficulty = 2
-        self.mining_reward = 10.0
         self.storage_contracts: Dict[str, Dict] = {}  # Contract ID -> Contract data
         self.initial_balance = 1000.0  # Initial balance for new accounts
         
@@ -78,7 +69,6 @@ class Blockchain:
 
     def create_genesis_block(self):
         genesis_block = Block(0, [], time.time(), "0")
-        genesis_block.mine_block(self.difficulty)
         self.chain.append(genesis_block)
 
     def get_latest_block(self) -> Block:
@@ -93,21 +83,26 @@ class Blockchain:
             print(f"Error saving blockchain: {e}")
 
     def add_transaction(self, transaction: Transaction) -> bool:
-        """Add a new transaction to the pending transactions list."""
+        """Add a new transaction to the blockchain."""
         try:
             # Verify transaction
             if not transaction.is_valid():
                 print(f"Invalid transaction: {transaction.to_dict()}")
                 return False
                 
-            # For initial balance transactions, mine immediately
+            # For initial balance transactions, add directly
             if transaction.sender == "SYSTEM" and transaction.data and transaction.data.get("type") == "initial_balance":
                 print(f"Processing initial balance transaction for {transaction.receiver}")
-                self.pending_transactions.append(transaction)
-                success = self.mine_pending_transactions()
-                if success:
-                    print(f"Initial balance of {transaction.amount} sabudhana added for {transaction.receiver}")
-                return success
+                new_block = Block(
+                    len(self.chain),
+                    [transaction],
+                    time.time(),
+                    self.chain[-1].hash if self.chain else "0"
+                )
+                self.chain.append(new_block)
+                self.save_blockchain()
+                print(f"Initial balance of {transaction.amount} sabudhana added for {transaction.receiver}")
+                return True
                 
             # For regular transactions, check sender balance
             if transaction.sender != "SYSTEM":
@@ -116,53 +111,20 @@ class Blockchain:
                     print(f"Insufficient balance: {balance} < {transaction.amount}")
                     return False
                 
-            # Add to pending transactions
+            # Add transaction to new block
             print(f"Adding transaction: {transaction.amount} sabudhana from {transaction.sender} to {transaction.receiver}")
-            self.pending_transactions.append(transaction)
+            new_block = Block(
+                len(self.chain),
+                [transaction],
+                time.time(),
+                self.chain[-1].hash if self.chain else "0"
+            )
+            self.chain.append(new_block)
+            self.save_blockchain()
             return True
             
         except Exception as e:
             print(f"Error adding transaction: {e}")
-            return False
-
-    def mine_pending_transactions(self, miner_address: str = "SYSTEM") -> bool:
-        """Mine pending transactions and add them to the blockchain."""
-        try:
-            if not self.pending_transactions:
-                print("No pending transactions to mine")
-                return False
-                
-            # Create new block with pending transactions
-            new_block = Block(
-                len(self.chain),
-                self.pending_transactions,
-                time.time(),
-                self.chain[-1].hash if self.chain else "0" * 64
-            )
-            
-            # Mine the block
-            print("Mining new block...")
-            new_block.mine_block(self.difficulty)
-            
-            # Add block to chain
-            self.chain.append(new_block)
-            
-            # Clear pending transactions
-            self.pending_transactions = []
-            
-            # Save blockchain state
-            self.save_blockchain()
-            
-            print(f"\n=== New Block Mined ===")
-            print(f"Block Height: {len(self.chain)}")
-            print(f"Transactions: {len(new_block.transactions)}")
-            print(f"Block Hash: {new_block.hash[:8]}...")
-            print(f"Miner: {miner_address[:8]}...")
-            
-            return True
-            
-        except Exception as e:
-            print(f"Error mining transactions: {e}")
             return False
 
     def get_balance(self, address: str) -> float:
@@ -285,7 +247,6 @@ class Blockchain:
                 'timestamp': block.timestamp,
                 'transactions': [tx.to_dict() for tx in block.transactions],
                 'previous_hash': block.previous_hash,
-                'nonce': block.nonce,
                 'hash': block.hash
             } for block in self.chain],
             'pending_transactions': [tx.to_dict() for tx in self.pending_transactions],
@@ -325,7 +286,6 @@ class Blockchain:
                 block_data['timestamp'],
                 block_data['previous_hash']
             )
-            block.nonce = block_data['nonce']
             block.hash = block_data['hash']
             
             blockchain.chain.append(block)
