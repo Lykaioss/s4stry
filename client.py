@@ -13,6 +13,7 @@ import random
 import traceback
 import aiohttp
 from blockchain.blockchain import Blockchain
+from blockchain.wallet import Wallet
 
 # Set up basic console logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -24,11 +25,20 @@ class StorageClient:
         self.server_url = server_url
         self.client_id = str(uuid.uuid4())
         self.blockchain = Blockchain()
+        self.wallet = Wallet(self.blockchain)  # Initialize wallet
         self.blockchain_address = None
         self.session = None
         
         # Create client directory if it doesn't exist
-        os.makedirs("S4S_Client/downloads", exist_ok=True)
+        self.downloads_dir = Path("S4S_Client/downloads")
+        os.makedirs(self.downloads_dir, exist_ok=True)
+        
+        # Create key storage directory
+        self.key_dir = Path("S4S_Client/keys")
+        os.makedirs(self.key_dir, exist_ok=True)
+        
+        # Load or generate encryption key
+        self.encryption_key = self.load_or_generate_key()
         
         print(f"\n=== Client Initialized ===")
         print(f"Client ID: {self.client_id}")
@@ -40,19 +50,51 @@ class StorageClient:
         return await self.register_with_server()
         
     async def stop(self):
-        """Stop the client session."""
-        if self.session:
-            await self.session.close()
+        """Stop the client session and clean up resources."""
+        try:
+            print("\n=== Shutting down client ===")
+            
+            # Close the aiohttp session if it exists
+            if self.session:
+                print("Closing network session...")
+                await self.session.close()
+                self.session = None
+            
+            # Save any pending blockchain transactions
+            if self.blockchain:
+                print("Saving blockchain state...")
+                self.blockchain.save_blockchain()
+            
+            # Clean up temporary files
+            temp_dir = Path(os.environ.get('TEMP', os.environ.get('TMP', '.')))
+            for file in temp_dir.glob("encrypted_*"):
+                try:
+                    os.remove(file)
+                    print(f"Cleaned up temporary file: {file}")
+                except Exception as e:
+                    print(f"Warning: Failed to remove temporary file {file}: {e}")
+            
+            print("Client shutdown complete")
+            
+        except Exception as e:
+            print(f"Error during shutdown: {e}")
+            traceback.print_exc()
     
     async def register_with_server(self):
         """Register with the server and create blockchain account."""
         try:
-            # First, create blockchain account
-            self.blockchain_address = self.blockchain.create_account(self.client_id)
-            if not self.blockchain_address:
-                print("Failed to create blockchain account")
-                return False
-                
+            # First, create blockchain account using wallet
+            try:
+                self.blockchain_address = self.wallet.create_account(self.client_id)
+            except ValueError as e:
+                if "Username already exists" in str(e):
+                    # If account exists, get its address
+                    account_info = self.wallet.get_account_info(self.client_id)
+                    self.blockchain_address = account_info['address']
+                    print(f"Using existing account: {self.blockchain_address}")
+                else:
+                    raise
+            
             # Then register with server
             response = await self.session.post(
                 f"{self.server_url}/register-client/",
@@ -78,29 +120,76 @@ class StorageClient:
             traceback.print_exc()
             return False
     
+    async def get_available_renters(self) -> list:
+        """Get list of available renters from the server."""
+        try:
+            async with self.session.get(f"{self.server_url}/renters/") as response:
+                if response.status == 200:
+                    renters = await response.json()
+                    return renters
+                else:
+                    print(f"Failed to get renters: {response.status}")
+                    return []
+        except Exception as e:
+            print(f"Error getting renters: {e}")
+            return []
+    
+    def load_or_generate_key(self) -> bytes:
+        """Load existing key or generate a new one."""
+        key_file = self.key_dir / "encryption.key"
+        
+        if key_file.exists():
+            try:
+                with open(key_file, 'rb') as f:
+                    return f.read()
+            except Exception as e:
+                print(f"Error loading encryption key: {e}")
+                print("Generating new key...")
+        
+        # Generate new key
+        key = self.generate_key("s4s_encryption_key")
+        
+        # Save the key
+        try:
+            with open(key_file, 'wb') as f:
+                f.write(key)
+            print("New encryption key generated and saved")
+        except Exception as e:
+            print(f"Warning: Failed to save encryption key: {e}")
+        
+        return key
+    
     def generate_key(self, password: str) -> bytes:
         """Generate a Fernet key from a password."""
         # Use SHA-256 to hash the password and then base64 encode it
         key = hashlib.sha256(password.encode()).digest()
         return base64.urlsafe_b64encode(key)
     
-    def encrypt_file(self, input_path: Path, output_path: Path, key: bytes) -> None:
+    def encrypt_file(self, input_path: Path, output_path: Path) -> None:
         """Encrypt a file using Fernet."""
-        fernet = Fernet(key)
-        with open(input_path, 'rb') as file:
-            original = file.read()
-        encrypted = fernet.encrypt(original)
-        with open(output_path, 'wb') as encrypted_file:
-            encrypted_file.write(encrypted)
+        try:
+            fernet = Fernet(self.encryption_key)
+            with open(input_path, 'rb') as file:
+                original = file.read()
+            encrypted = fernet.encrypt(original)
+            with open(output_path, 'wb') as encrypted_file:
+                encrypted_file.write(encrypted)
+        except Exception as e:
+            print(f"Error encrypting file: {e}")
+            raise
     
-    def decrypt_file(self, input_path: Path, output_path: Path, key: bytes) -> None:
+    def decrypt_file(self, input_path: Path, output_path: Path) -> None:
         """Decrypt a file using Fernet."""
-        fernet = Fernet(key)
-        with open(input_path, 'rb') as encrypted_file:
-            encrypted = encrypted_file.read()
-        decrypted = fernet.decrypt(encrypted)
-        with open(output_path, 'wb') as decrypted_file:
-            decrypted_file.write(decrypted)
+        try:
+            fernet = Fernet(self.encryption_key)
+            with open(input_path, 'rb') as encrypted_file:
+                encrypted = encrypted_file.read()
+            decrypted = fernet.decrypt(encrypted)
+            with open(output_path, 'wb') as decrypted_file:
+                decrypted_file.write(decrypted)
+        except Exception as e:
+            print(f"Error decrypting file: {e}")
+            raise
     
     def schedule_retrieval(self, filename: str, duration_minutes: int) -> None:
         """Schedule automatic retrieval of a file after specified duration."""
@@ -155,59 +244,53 @@ class StorageClient:
                 print("Upload cancelled.")
                 return
 
-            # Register with server
-            await self.register_with_server()
+            # Ensure client is registered with server
+            if not self.blockchain_address:
+                print("Registering with server...")
+                if not await self.register_with_server():
+                    print("Failed to register with server")
+                    return
+                print("Successfully registered with server")
 
-            # Get available renters
-            renters = await self.get_available_renters()
-            if not renters:
-                print("No renters available")
+            # Encrypt the file before upload
+            temp_encrypted = Path(os.environ.get('TEMP', os.environ.get('TMP', '.'))) / f"encrypted_{file_name}"
+            try:
+                self.encrypt_file(Path(file_path), temp_encrypted)
+            except Exception as e:
+                print(f"Error encrypting file: {e}")
                 return
 
-            # Split file into shards
-            shards = self.split_file(file_path)
-            print(f"Split file into {len(shards)} shards")
+            # Create form data for upload
+            form_data = aiohttp.FormData()
+            form_data.add_field('file', open(temp_encrypted, 'rb'), filename=file_name)
+            form_data.add_field('blockchain_address', self.blockchain_address)
+            form_data.add_field('storage_cost', str(storage_cost))
+            form_data.add_field('duration', str(duration))
 
-            # Create storage contracts for each shard
-            contracts = []
-            for shard in shards:
-                # Select a random renter
-                renter = random.choice(renters)
-                
-                # Create storage contract
-                contract_id = self.blockchain.create_storage_contract(
-                    self.blockchain_address,
-                    renter['blockchain_address'],
-                    len(shard),
-                    duration,
-                    storage_cost / len(shards)  # Split cost among shards
-                )
-                
-                if not contract_id:
-                    print("Failed to create storage contract")
-                    return
-                    
-                contracts.append({
-                    'contract_id': contract_id,
-                    'renter': renter,
-                    'shard': shard
-                })
+            # Upload file to server with client_id as query parameter
+            async with self.session.post(
+                f"{self.server_url}/upload/?client_id={self.client_id}",
+                data=form_data
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    print(f"\nFile '{file_name}' uploaded successfully!")
+                    print(f"Storage Cost: {storage_cost:.2f} sabudhana")
+                    print(f"New Balance: {self.blockchain.get_balance(self.blockchain_address):.2f} sabudhana")
+                    print(f"Number of shards: {result.get('num_shards', 'unknown')}")
+                    print(f"Replication factor: {result.get('replication_factor', 'unknown')}")
+                    print(f"Contract IDs: {', '.join(result.get('contracts', []))}")
+                elif response.status == 503:
+                    print("Error: No renters available. Please try again later.")
+                else:
+                    print(f"Upload failed with status code: {response.status}")
+                    print(f"Response: {await response.text()}")
 
-            # Send shards to renters
-            for contract in contracts:
-                success = await self.send_shard_to_renter(
-                    contract['renter'],
-                    contract['shard'],
-                    file_name,
-                    contract['contract_id']
-                )
-                if not success:
-                    print(f"Failed to send shard to renter {contract['renter']['id']}")
-                    return
-
-            print(f"\nFile '{file_name}' uploaded successfully!")
-            print(f"Storage Cost: {storage_cost:.2f} sabudhana")
-            print(f"New Balance: {self.blockchain.get_balance(self.blockchain_address):.2f} sabudhana")
+            # Clean up temporary encrypted file
+            try:
+                os.remove(temp_encrypted)
+            except Exception as e:
+                print(f"Warning: Failed to remove temporary file: {e}")
 
         except Exception as e:
             print(f"Error uploading file: {e}")
@@ -261,12 +344,9 @@ class StorageClient:
             except PermissionError:
                 raise PermissionError(f"Cannot write to temporary directory: {temp_dir}. Please check permissions.")
             
-            # Generate the same key used for encryption
-            key = self.generate_key("your-secret-password")  # Must match the key used for encryption
-            
             # Decrypt the file
             try:
-                self.decrypt_file(temp_encrypted, output_path, key)
+                self.decrypt_file(temp_encrypted, output_path)
             except PermissionError:
                 raise PermissionError(f"Cannot write to: {output_path}. Please check permissions.")
             
@@ -308,7 +388,7 @@ class StorageClient:
 
 async def main():
     # Get server URL from user
-    server_url = input("Enter server URL (default: http://localhost:8000): ").strip()
+    server_url = input("Enter server URL (default: http://localhost:8000): ").strip() or "http://192.168.5.221:8000"
     if not server_url:
         server_url = "http://localhost:8000"
         
@@ -351,18 +431,28 @@ async def main():
                 client.blockchain.print_blockchain_status()
                 
             elif choice == "5":
-                print("Exiting...")
+                print("\nInitiating graceful shutdown...")
                 break
                 
             else:
                 print("Invalid choice. Please try again.")
                 
+    except KeyboardInterrupt:
+        print("\nReceived interrupt signal. Initiating graceful shutdown...")
     except Exception as e:
         print(f"Error in main loop: {e}")
         traceback.print_exc()
     finally:
+        # Ensure client is properly shut down
         await client.stop()
+        print("\nClient shutdown complete. Goodbye!")
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main()) 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nReceived interrupt signal. Exiting...")
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        traceback.print_exc() 

@@ -8,16 +8,20 @@ def reset_blockchain():
     files_to_delete = [
         "blockchain.json",
         "accounts.json",
-        "S4S_Client/downloads",
-        "S4S_Renter/storage"
+    ]
+
+    directories_to_delete = [
+        "S4S_Client",
+        "S4S_Renter",
+        "uploads"
     ]
     
     print("\n=== Blockchain Reset Tool ===")
     print("This will:")
     print("1. Delete blockchain.json")
     print("2. Delete accounts.json")
-    print("3. Clear client downloads")
-    print("4. Clear renter storage")
+    print("3. Clear client directory")
+    print("4. Clear renter directory")
     print("\nWARNING: This will permanently delete all blockchain data!")
     
     confirm = input("\nAre you sure you want to continue? (yes/no): ").lower()
@@ -27,25 +31,20 @@ def reset_blockchain():
     
     try:
         # Delete blockchain and accounts files
-        for file in files_to_delete[:2]:
+        for file in files_to_delete:
             if os.path.exists(file):
                 os.remove(file)
                 print(f"Deleted {file}")
         
         # Clear client downloads
-        if os.path.exists(files_to_delete[2]):
-            shutil.rmtree(files_to_delete[2])
-            os.makedirs(files_to_delete[2])
-            print("Cleared client downloads")
+        for directory in directories_to_delete:
+            print(f"Deleting {directory}")
+            if os.path.exists(directory):
+                shutil.rmtree(directory)
+                print(f"Deleted {directory}")
         
-        # Clear renter storage
-        if os.path.exists(files_to_delete[3]):
-            shutil.rmtree(files_to_delete[3])
-            os.makedirs(files_to_delete[3])
-            print("Cleared renter storage")
         
-        print("\nBlockchain reset complete!")
-        print("You can now start fresh with new blockchain data.")
+        print("\nProject Reset Complete!")
         
     except Exception as e:
         print(f"Error during reset: {str(e)}")

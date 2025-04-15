@@ -1,5 +1,5 @@
 # Distributed Storage System
-
+C:\Users\ASUS\Desktop\vocab.txt
 A distributed file storage system that splits files into shards and stores them across multiple renters. Built with FastAPI.
 
 ## Features
