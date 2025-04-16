@@ -8,6 +8,7 @@ def reset_project():
     files_to_delete = [
         "blockchain.json",
         "accounts.json",
+        "wallets.json"
     ]
 
     directories_to_delete = [
