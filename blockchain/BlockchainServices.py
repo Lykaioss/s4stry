@@ -63,33 +63,34 @@ class Transaction:
 
 
 class Block:
+    BLOCK_SIZE = 3
     class BlockFullException(Exception):
         pass
 
-    def __init__(self, previous_hash: str | None, transactions: list[Transaction] = [], block_size: int = 3):
-        self.previous_hash = previous_hash
-        self.transactions = transactions
-        self.block_hash = ""
-        self.block_size = block_size
+    def __init__(self):
+        self.previous_hash:str = "####"
+        self.index:int = 0
+        self.block_hash = "****"
+        self.transactions:list[Transaction] = []
 
     def calculate_block_hash(self):
         hash_string = ""
         for t in self.transactions:
-            hash_string += t.receipt
+            hash_string += t["receipt"]
         block_hash = json.dumps(hash_string, sort_keys=True)
         return hashlib.sha256(block_hash.encode()).hexdigest()
 
 
     def add_transaction(self, transaction: Transaction):
-        if len(self.transactions) >= self.block_size:
-            raise self.BlockFullException("Block is now full")
-        
-        self.transactions.append(transaction)
+        tx = transaction.__dict__
 
-        if len(self.transactions) == self.block_size -1 :
-            print("Block is full")
+        if len(self.transactions) >= Block.BLOCK_SIZE:
+            raise self.BlockFullException("Block already full!")
+        
+        self.transactions.append(tx)
+
+        if len(self.transactions) == Block.BLOCK_SIZE:
             self.block_hash = self.calculate_block_hash()
-            self.show_block
 
     def show_block(self):
         print(self.__dict__)
@@ -98,11 +99,38 @@ class Block:
 class Blockchain:
     def __init__(self):
         self.chain:list[Block] = []
+        self._load_chain()
+    
+    def _load_chain(self):
+        if os.path.exists('blockchain.json'):
+            with open('blockchain.json', 'r') as f:
+                try:
+                    chain_data = json.load(f)
+                    self.chain = chain_data.get('chain', [])
+                except json.JSONDecodeError:
+                    self.chain = []
+    
+    def _save_chain(self):
+        with open('blockchain.json', 'w') as f:
+            json.dump({'chain': self.chain}, f, indent=4)
 
     def add_block(self, block: Block):
+        # Set the block index based on the current chain length
+        self._load_chain()
+        block.index = len(self.chain)
+        block.previous_hash = self.latest_block_hash()
         self.chain.append(block.__dict__)
+        self._save_chain()
     
+    def latest_block_hash(self):
+        self._load_chain()
+        if not self.chain:
+            return None  
+        latest_block = self.chain[-1]
+        return latest_block["block_hash"]
+
     def show_chain(self):
+        self._load_chain()
         print(self.__dict__)
         
     
@@ -111,33 +139,32 @@ if __name__ == "__main__":
     acc2 = Account("456", 200)
 
     blockchain = Blockchain()
-    genesis_block = Block(None)
-    genesis_block.block_hash = "0000"
 
+    genesis_block = Block()
     blockchain.add_block(genesis_block)
-    blockchain.show_chain()
 
-
-    block1 = Block(previous_hash=genesis_block.block_hash)
+    # blockchain.show_chain()
+    block1 = Block()
 
     acc2.send_money(acc1, 50)
     tx1 = Transaction(acc2.address, acc1.address, 50)
-
     block1.add_transaction(tx1)
+    
 
     acc1.send_money(acc2, 80)
-    tx2 = Transaction(acc2.address, acc1.address, 50)
-
+    tx2 = Transaction(acc1.address, acc2.address, 80)
     block1.add_transaction(tx2)
 
     acc3 = Account("789", 400)
     acc3.send_money(acc1, 200)
     tx3 = Transaction(acc3.address, acc1.address, 200)
-
     block1.add_transaction(tx3)
 
     blockchain.add_block(block1)
-    blockchain.show_chain()
 
+    block2 = Block()
+    print(block2.__dict__)
+    #print(block2.transactions)
+    blockchain.add_block(block2)
     
 

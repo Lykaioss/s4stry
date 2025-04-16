@@ -2,7 +2,7 @@
 import rpyc
 
 def main():
-    ADDR, PORT = "192.168.17.79", 7575
+    ADDR, PORT = "192.168.137.61", 7575
     try:
         # Connect to the server
         print("Connecting to blockchain server...")
