@@ -84,8 +84,16 @@ def get_local_ip():
 # Get the server IP from user input
 print("\nWelcome to the Distributed Storage Renter!")
 print("Please enter the IP address of the server machine")
-print("Example: http://192.168.1.100:8000")
-SERVER_URL = input("Server URL: ").strip() or "http://192.168.3.46:8000"
+print("Example: 192.168.1.100:8000")
+server_input = input("Server URL: ").strip() or "192.168.3.46:8000"
+
+# Ensure server URL has http:// prefix and no https://
+if server_input.startswith('https://'):
+    server_input = server_input.replace('https://', 'http://')
+elif not server_input.startswith('http://'):
+    server_input = f"http://{server_input}"
+
+SERVER_URL = server_input.rstrip('/')  # Remove trailing slash if present
 
 # Get blockchain server URL
 blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100) [Press Enter to skip]: ").strip()

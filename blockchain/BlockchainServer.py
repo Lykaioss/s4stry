@@ -27,6 +27,8 @@ class RPyCServer(rpyc.Service):
         genesis_block = Block()
         genesis_block.block_hash = "0000"
         self.blockchain.add_block(genesis_block)
+        # Initialize current block
+        self.current_block = Block()
     
     def exposed_create_account(self, username: str, initial_balance: float) -> str:
         """Create a new account and return its address"""
@@ -48,25 +50,35 @@ class RPyCServer(rpyc.Service):
     def exposed_send_money(self, sender_address: str, receiver_address: str, amount: float) -> bool:
         """Send money from one account to another"""
         try:
-            # Create temporary account objects for the transaction
-            sender = Account("temp_sender", 0)
+            # Create temporary account objects for the transaction without creating new accounts
+            sender = Account("temp_sender", 0, create_new=False)
             sender.address = sender_address
             sender.balance = self.exposed_get_balance(sender_address)
             
-            receiver = Account("temp_receiver", 0)
+            receiver = Account("temp_receiver", 0, create_new=False)
             receiver.address = receiver_address
             receiver.balance = self.exposed_get_balance(receiver_address)
             
             # Perform the transaction
             sender.send_money(receiver, amount)
             
-            # Create and add transaction to a new block
+            # Create transaction and add to current block
             tx = Transaction(sender_address, receiver_address, amount)
-            current_block = Block()
-            current_block.add_transaction(tx)
-            self.blockchain.add_block(current_block)
+            try:
+                self.current_block.add_transaction(tx)
+                # If block is full (3 transactions), add it to blockchain and create new block
+                if len(self.current_block.transactions) == Block.BLOCK_SIZE:
+                    self.blockchain.add_block(self.current_block)
+                    self.current_block = Block()
+                return True
+            except Block.BlockFullException:
+                # If block is full, add it to blockchain and create new block
+                self.blockchain.add_block(self.current_block)
+                self.current_block = Block()
+                # Add transaction to new block
+                self.current_block.add_transaction(tx)
+                return True
             
-            return True
         except Exception as e:
             raise Exception(f"Failed to send money: {str(e)}")
     
@@ -79,6 +91,10 @@ class RPyCServer(rpyc.Service):
         if not self.blockchain.chain:
             return {}
         return self.blockchain.chain[-1]
+    
+    def exposed_get_current_block(self) -> dict:
+        """Get the current block with pending transactions"""
+        return self.current_block.__dict__
 
 
 if __name__ == "__main__":
