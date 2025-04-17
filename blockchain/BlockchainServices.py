@@ -4,10 +4,11 @@ import os
 import hashlib
 
 class Account:
-    def __init__(self, username:str, balance: float):
+    def __init__(self, username:str, balance: float, create_new: bool = True):
         self.address = self._calc_address(username)
         self.balance = balance
-        self._save_account()
+        if create_new:
+            self._save_account()
     
     def _calc_address(self, username):
         return hashlib.sha256(username.encode()).hexdigest()
@@ -74,25 +75,31 @@ class Block:
         self.transactions:list[Transaction] = []
 
     def calculate_block_hash(self):
-        hash_string = ""
-        for t in self.transactions:
-            hash_string += t["receipt"]
-        block_hash = json.dumps(hash_string, sort_keys=True)
-        return hashlib.sha256(block_hash.encode()).hexdigest()
-
+        """Calculate the hash of the block based on its transactions and previous hash"""
+        # Create a string with all transaction data
+        transaction_data = ""
+        for tx in self.transactions:
+            transaction_data += f"{tx['sender']}{tx['receiver']}{tx['amount']}{tx['receipt']}"
+        
+        # Combine with previous hash and index
+        data_to_hash = f"{self.previous_hash}{self.index}{transaction_data}"
+        return hashlib.sha256(data_to_hash.encode()).hexdigest()
 
     def add_transaction(self, transaction: Transaction):
-        tx = transaction.__dict__
-
+        """Add a transaction to the block"""
         if len(self.transactions) >= Block.BLOCK_SIZE:
             raise self.BlockFullException("Block already full!")
         
-        self.transactions.append(tx)
-
+        # Convert transaction to dict and add to block
+        tx_dict = transaction.__dict__
+        self.transactions.append(tx_dict)
+        
+        # If block is full, calculate its hash
         if len(self.transactions) == Block.BLOCK_SIZE:
             self.block_hash = self.calculate_block_hash()
 
     def show_block(self):
+        """Print block information"""
         print(self.__dict__)
 
 

@@ -14,6 +14,7 @@ import time
 import socket
 from contextlib import asynccontextmanager
 from datetime import datetime
+import rpyc
 
 # Set up basic console logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -34,6 +35,10 @@ logger.info(f"Storage directory: {STORAGE_DIR}")
 heartbeat_thread = None
 stop_heartbeat = threading.Event()
 
+# Global blockchain connection
+blockchain_conn = None
+blockchain_address = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -46,6 +51,8 @@ async def lifespan(app: FastAPI):
     stop_heartbeat.set()
     if heartbeat_thread:
         heartbeat_thread.join()
+    if blockchain_conn:
+        blockchain_conn.close()
 
 app = FastAPI(title="Distributed Storage Renter", lifespan=lifespan)
 
@@ -77,8 +84,39 @@ def get_local_ip():
 # Get the server IP from user input
 print("\nWelcome to the Distributed Storage Renter!")
 print("Please enter the IP address of the server machine")
-print("Example: http://192.168.1.100:8000")
-SERVER_URL = input("Server URL: ").strip() or "http://192.168.3.46:8000"
+print("Example: 192.168.1.100:8000")
+server_input = input("Server URL: ").strip() or "192.168.3.46:8000"
+
+# Ensure server URL has http:// prefix and no https://
+if server_input.startswith('https://'):
+    server_input = server_input.replace('https://', 'http://')
+elif not server_input.startswith('http://'):
+    server_input = f"http://{server_input}"
+
+SERVER_URL = server_input.rstrip('/')  # Remove trailing slash if present
+
+# Get blockchain server URL
+blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100) [Press Enter to skip]: ").strip()
+if blockchain_server_url:
+    try:
+        # Remove any protocol prefix and port if present
+        blockchain_server_url = blockchain_server_url.replace('http://', '').replace('https://', '')
+        if ':' in blockchain_server_url:
+            blockchain_server_url = blockchain_server_url.split(':')[0]
+        
+        blockchain_conn = rpyc.connect(blockchain_server_url, 7575)
+        print(f"Connected to blockchain server at {blockchain_server_url}:7575")
+        
+        username = input("Enter your username for blockchain account: ").strip()
+        blockchain_address = blockchain_conn.root.exposed_create_account(username, 1000.0)
+        print(f"Your blockchain address: {blockchain_address}")
+        balance = blockchain_conn.root.exposed_get_balance(blockchain_address)
+        print(f"Your blockchain balance: {balance}")
+    except Exception as e:
+        print(f"Error connecting to blockchain server: {str(e)}")
+        print("\nMake sure the blockchain server is running and the IP address is correct.")
+        print("Example format: 192.168.0.103 (without http:// or port number)")
+        print("The blockchain server should be running on port 7575")
 
 # Get the local IP address
 LOCAL_IP = get_local_ip()
@@ -145,7 +183,8 @@ def register_with_server():
             json={
                 "renter_id": RENTER_ID,
                 "url": RENTER_URL,
-                "storage_available": STORAGE_AVAILABLE
+                "storage_available": STORAGE_AVAILABLE,
+                "blockchain_address": blockchain_address if blockchain_conn else None
             }
         )
         response.raise_for_status()
@@ -159,7 +198,10 @@ def send_heartbeat():
         try:
             response = requests.post(
                 f"{SERVER_URL}/heartbeat/",
-                json={"renter_id": RENTER_ID}
+                json={
+                    "renter_id": RENTER_ID,
+                    "blockchain_address": blockchain_address if blockchain_conn else None
+                }
             )
             response.raise_for_status()
             logger.debug("Heartbeat sent successfully")
@@ -174,7 +216,8 @@ async def read_root():
         "status": "healthy",
         "message": "Distributed Storage Renter is running",
         "renter_id": RENTER_ID,
-        "renter_url": RENTER_URL
+        "renter_url": RENTER_URL,
+        "blockchain_address": blockchain_address if blockchain_conn else None
     }
 
 @app.post("/store-shard/")
