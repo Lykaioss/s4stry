@@ -8,18 +8,28 @@ import hashlib
 import time
 import threading
 from datetime import datetime
+import rpyc
 
 # Set up basic console logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 class StorageClient:
-    def __init__(self, server_url: str):
+    def __init__(self, server_url: str, blockchain_server_url: str = None):
         """Initialize the storage client with the server URL."""
         # Ensure server_url has a scheme
         if not server_url.startswith(('http://', 'https://')):
             server_url = f"http://{server_url}"
         self.server_url = server_url.rstrip('/')  # Remove trailing slash if present
+        
+        # Initialize blockchain connection if URL provided
+        self.blockchain_conn = None
+        if blockchain_server_url:
+            try:
+                self.blockchain_conn = rpyc.connect(blockchain_server_url, 7575)
+                logger.info("Connected to blockchain server")
+            except Exception as e:
+                logger.error(f"Failed to connect to blockchain server: {str(e)}")
         
         # Create base client directory
         self.base_dir = Path("S4S_Client")
@@ -241,6 +251,42 @@ class StorageClient:
             logger.error(f"Error in download process: {str(e)}")
             raise
 
+    def create_blockchain_account(self, username: str, initial_balance: float = 1000.0) -> str:
+        """Create a new blockchain account."""
+        if not self.blockchain_conn:
+            raise Exception("Blockchain server not connected")
+        try:
+            address = self.blockchain_conn.root.exposed_create_account(username, initial_balance)
+            logger.info(f"Created blockchain account for {username}")
+            return address
+        except Exception as e:
+            logger.error(f"Failed to create blockchain account: {str(e)}")
+            raise
+
+    def get_blockchain_balance(self, address: str) -> float:
+        """Get the balance of a blockchain account."""
+        if not self.blockchain_conn:
+            raise Exception("Blockchain server not connected")
+        try:
+            balance = self.blockchain_conn.root.exposed_get_balance(address)
+            return balance
+        except Exception as e:
+            logger.error(f"Failed to get blockchain balance: {str(e)}")
+            raise
+
+    def send_blockchain_payment(self, sender_address: str, receiver_address: str, amount: float) -> bool:
+        """Send payment through the blockchain."""
+        if not self.blockchain_conn:
+            raise Exception("Blockchain server not connected")
+        try:
+            success = self.blockchain_conn.root.exposed_send_money(sender_address, receiver_address, amount)
+            if success:
+                logger.info(f"Successfully sent {amount} from {sender_address} to {receiver_address}")
+            return success
+        except Exception as e:
+            logger.error(f"Failed to send blockchain payment: {str(e)}")
+            raise
+
 def main():
     """Main function to run the client."""
     print("Welcome to the Distributed Storage Client!")
@@ -252,16 +298,36 @@ def main():
             break
         print("Server URL cannot be empty. Please try again.")
     
+    # Get blockchain server URL
+    blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100) [Press Enter to skip]: ").strip()
+    
     # Initialize client
-    client = StorageClient(server_url)
+    client = StorageClient(server_url, blockchain_server_url)
+    
+    # Create blockchain account if connected
+    blockchain_address = None
+    if blockchain_server_url:
+        try:
+            username = input("Enter your username for blockchain account: ").strip()
+            blockchain_address = client.create_blockchain_account(username)
+            print(f"Your blockchain address: {blockchain_address}")
+            balance = client.get_blockchain_balance(blockchain_address)
+            print(f"Your blockchain balance: {balance}")
+        except Exception as e:
+            print(f"Error setting up blockchain account: {str(e)}")
     
     while True:
         print("\nOptions:")
         print("1. Upload a file")
         print("2. Download a file")
-        print("3. Exit")
+        if blockchain_server_url:
+            print("3. Check blockchain balance")
+            print("4. Send blockchain payment")
+            print("5. Exit")
+        else:
+            print("3. Exit")
         
-        choice = input("Enter your choice (1-3): ")
+        choice = input("Enter your choice: ")
         
         if choice == "1":
             file_path = input("Enter the path to the file you want to upload: ")
@@ -291,7 +357,26 @@ def main():
             except Exception as e:
                 print(f"Error: {str(e)}")
         
-        elif choice == "3":
+        elif choice == "3" and blockchain_server_url:
+            try:
+                balance = client.get_blockchain_balance(blockchain_address)
+                print(f"Your blockchain balance: {balance}")
+            except Exception as e:
+                print(f"Error: {str(e)}")
+        
+        elif choice == "4" and blockchain_server_url:
+            try:
+                receiver_address = input("Enter receiver's blockchain address: ").strip()
+                amount = float(input("Enter amount to send: "))
+                success = client.send_blockchain_payment(blockchain_address, receiver_address, amount)
+                if success:
+                    print("Payment sent successfully!")
+                    balance = client.get_blockchain_balance(blockchain_address)
+                    print(f"Your new balance: {balance}")
+            except Exception as e:
+                print(f"Error: {str(e)}")
+        
+        elif choice == "3" and not blockchain_server_url or choice == "5" and blockchain_server_url:
             print("Goodbye!")
             break
         

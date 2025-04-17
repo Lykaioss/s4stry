@@ -24,7 +24,7 @@ class RPyCServer(rpyc.Service):
         super().__init__()
         self.blockchain = Blockchain()
         # Create genesis block
-        genesis_block = Block(None)
+        genesis_block = Block()
         genesis_block.block_hash = "0000"
         self.blockchain.add_block(genesis_block)
     
@@ -62,7 +62,7 @@ class RPyCServer(rpyc.Service):
             
             # Create and add transaction to a new block
             tx = Transaction(sender_address, receiver_address, amount)
-            current_block = Block(self.blockchain.chain[-1]['block_hash'])
+            current_block = Block()
             current_block.add_transaction(tx)
             self.blockchain.add_block(current_block)
             

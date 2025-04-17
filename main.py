@@ -15,6 +15,7 @@ from collections import defaultdict
 import random
 import socket
 import asyncio
+import rpyc
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +53,29 @@ RACK_COUNT = 3  # Number of racks in the system
 
 # Renter management
 RENTER_TIMEOUT = 60  # seconds
+
+# Blockchain configuration
+blockchain_conn = None
+blockchain_server_url = None
+
+def connect_to_blockchain_server():
+    """Connect to the blockchain server."""
+    global blockchain_conn, blockchain_server_url
+    try:
+        blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100) [Press Enter to skip]: ").strip()
+        if blockchain_server_url:
+            # Remove any protocol prefix and port if present
+            blockchain_server_url = blockchain_server_url.replace('http://', '').replace('https://', '')
+            if ':' in blockchain_server_url:
+                blockchain_server_url = blockchain_server_url.split(':')[0]
+            
+            blockchain_conn = rpyc.connect(blockchain_server_url, 7575)
+            logger.info(f"Connected to blockchain server at {blockchain_server_url}:7575")
+    except Exception as e:
+        logger.error(f"Failed to connect to blockchain server: {str(e)}")
+        print("\nMake sure the blockchain server is running and the IP address is correct.")
+        print("Example format: 192.168.0.103 (without http:// or port number)")
+        print("The blockchain server should be running on port 7575")
 
 def assign_rack(renter_id: str) -> str:
     """Assign a renter to a rack."""
@@ -172,7 +196,11 @@ def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict
 @app.get("/")
 async def read_root():
     """Health check endpoint."""
-    return {"status": "healthy", "message": "Distributed Storage Server is running"}
+    return {
+        "status": "healthy",
+        "message": "Distributed Storage Server is running",
+        "blockchain_connected": blockchain_conn is not None
+    }
 
 @app.post("/register-renter/")
 async def register_renter(renter_info: dict):
@@ -183,7 +211,8 @@ async def register_renter(renter_info: dict):
             "url": renter_info["url"],
             "storage_available": renter_info["storage_available"],
             "last_heartbeat": time.time(),
-            "rack_id": assign_rack(renter_id)
+            "rack_id": assign_rack(renter_id),
+            "blockchain_address": renter_info.get("blockchain_address")
         }
         logger.info(f"Renter registered successfully with ID: {renter_id} in rack {renters[renter_id]['rack_id']}")
         return {"renter_id": renter_id, "message": "Renter registered successfully"}
@@ -198,6 +227,7 @@ async def receive_heartbeat(heartbeat_info: dict):
         renter_id = heartbeat_info["renter_id"]
         if renter_id in renters:
             renters[renter_id]["last_heartbeat"] = time.time()
+            renters[renter_id]["blockchain_address"] = heartbeat_info.get("blockchain_address")
             return {"message": "Heartbeat received"}
         else:
             raise HTTPException(status_code=404, detail="Renter not found")
@@ -427,5 +457,9 @@ if __name__ == "__main__":
     print(f"Server will be accessible at:")
     print(f"Local: http://localhost:8000")
     print(f"Network: http://{local_ip}:8000")
+    
+    # Connect to blockchain server
+    connect_to_blockchain_server()
+    
     print("\nPress Ctrl+C to stop the server")
     uvicorn.run(app, host="0.0.0.0", port=8000) 
