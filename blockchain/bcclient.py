@@ -2,7 +2,7 @@
 import rpyc
 
 def main():
-    ADDR, PORT = "192.168.137.61", 7575
+    ADDR, PORT = "192.168.0.217", 7575
     try:
         # Connect to the server
         print("Connecting to blockchain server...")
@@ -39,12 +39,12 @@ def main():
         print(f"Bob's new balance: {bob_balance}")
         
         # Get blockchain info
-        print("\nGetting blockchain information...")
-        blockchain = conn.root.exposed_get_blockchain()
-        latest_block = conn.root.exposed_get_latest_block()
+        # print("\nGetting blockchain information...")
+        # blockchain = conn.root.exposed_get_blockchain()
+        # latest_block = conn.root.exposed_get_latest_block()
         
-        print("Blockchain state:", blockchain)
-        print("Latest block:", latest_block)
+        # print("Blockchain state:", blockchain)
+        # print("Latest block:", latest_block)
         
     except Exception as e:
         print(f"Error: {e}")
