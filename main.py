@@ -450,6 +450,23 @@ def get_local_ip():
         # Fallback to localhost
         return "127.0.0.1"
 
+@app.get("/get-renters/")
+async def get_renters():
+    """Get information about all active renters."""
+    cleanup_inactive_renters()
+    
+    # Prepare renter information
+    renter_info = []
+    for renter_id, renter in renters.items():
+        renter_info.append({
+            "renter_id": renter_id,
+            "url": renter["url"],
+            "storage_available": renter["storage_available"],
+            "blockchain_address": renter.get("blockchain_address")
+        })
+    
+    return renter_info
+
 if __name__ == "__main__":
     import uvicorn
     local_ip = get_local_ip()
