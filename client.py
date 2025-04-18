@@ -10,6 +10,10 @@ import threading
 from datetime import datetime
 import rpyc
 import random
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
 
 # Set up basic console logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -48,6 +52,15 @@ class StorageClient:
         # Load or generate encryption key
         self.encryption_key = self.load_or_generate_key()
         
+        # Load or generate RSA keys
+        self.private_key, self.public_key = self.load_or_generate_rsa_keys()
+        
+        # Get username from user
+        self.username = self.get_username()
+        
+        # Register public key with server
+        self.register_public_key()
+        
         # Dictionary to track scheduled retrievals
         self.scheduled_retrievals = {}
         
@@ -55,6 +68,36 @@ class StorageClient:
         logger.info(f"Base directory: {self.base_dir}")
         logger.info(f"Downloads directory: {self.downloads_dir}")
         logger.info(f"Keys directory: {self.keys_dir}")
+        logger.info(f"Username: {self.username}")
+    
+    def get_username(self) -> str:
+        """Prompt user for username and store it."""
+        username_file = self.keys_dir / "username.txt"
+        
+        if username_file.exists():
+            try:
+                with open(username_file, 'r') as f:
+                    stored_username = f.read().strip()
+                    if stored_username:
+                        print(f"Found stored username: {stored_username}")
+                        use_stored = input("Use stored username? (y/n): ").lower()
+                        if use_stored == 'y':
+                            return stored_username
+            except Exception as e:
+                logger.error(f"Error reading stored username: {e}")
+        
+        while True:
+            username = input("Enter your username: ").strip()
+            if username:
+                try:
+                    with open(username_file, 'w') as f:
+                        f.write(username)
+                    return username
+                except Exception as e:
+                    logger.error(f"Error saving username: {e}")
+                    print("Username will not be saved for future use")
+                    return username
+            print("Username cannot be empty. Please try again.")
     
     def generate_key(self, password: str) -> bytes:
         """Generate a Fernet key from a password."""
@@ -229,7 +272,7 @@ class StorageClient:
             raise
     
     def download_file(self, filename: str, output_path: str = None) -> None:
-        """Download a file from the storage system."""
+        """Download a file from the storage system with challenge-response authentication."""
         try:
             # If no output path provided, use the default downloads directory
             if not output_path or output_path.strip() == "":
@@ -259,21 +302,32 @@ class StorageClient:
             except PermissionError:
                 raise PermissionError(f"No write permission in directory: {output_path.parent}. Please choose a different location.")
             
-            # Download the encrypted file
+            # Get the challenge from the server
             response = requests.get(
                 f"{self.server_url}/download/{filename}",
+                params={"username": self.username},
                 timeout=30
             )
             response.raise_for_status()
+            challenge_data = response.json()
             
-            # Save the encrypted file temporarily in the system temp directory
-            temp_dir = Path(os.environ.get('TEMP', os.environ.get('TMP', '.')))
-            temp_encrypted = temp_dir / f"encrypted_{filename}"
-            try:
-                with open(temp_encrypted, 'wb') as f:
-                    f.write(response.content)
-            except PermissionError:
-                raise PermissionError(f"Cannot write to temporary directory: {temp_dir}. Please check permissions.")
+            # Decrypt the challenge using our private key
+            encrypted_challenge = base64.b64decode(challenge_data["challenge"])
+            decrypted_nonce = self.decrypt_challenge(encrypted_challenge)
+            
+            # Send the decrypted nonce back to the server
+            verify_response = requests.post(
+                f"{self.server_url}/verify-challenge/{filename}",
+                params={"username": self.username},
+                json={"response": decrypted_nonce},
+                timeout=30
+            )
+            verify_response.raise_for_status()
+            
+            # Save the encrypted file temporarily
+            temp_encrypted = output_path.parent / f"encrypted_{filename}"
+            with open(temp_encrypted, 'wb') as f:
+                f.write(verify_response.content)
             
             # Decrypt the file using the stored key
             try:
@@ -353,6 +407,92 @@ class StorageClient:
             logger.error(f"Failed to send blockchain payment: {str(e)}")
             raise
 
+    def load_or_generate_rsa_keys(self):
+        """Load existing RSA keys or generate new ones."""
+        private_key_path = self.keys_dir / "private_key.pem"
+        public_key_path = self.keys_dir / "public_key.pem"
+        
+        if private_key_path.exists() and public_key_path.exists():
+            try:
+                with open(private_key_path, "rb") as f:
+                    private_key = serialization.load_pem_private_key(
+                        f.read(),
+                        password=None
+                    )
+                with open(public_key_path, "rb") as f:
+                    public_key = serialization.load_pem_public_key(
+                        f.read()
+                    )
+                logger.info("Loaded existing RSA keys")
+                return private_key, public_key
+            except Exception as e:
+                logger.error(f"Error loading RSA keys: {e}")
+                logger.info("Generating new RSA keys...")
+        
+        # Generate new RSA keys
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048
+        )
+        public_key = private_key.public_key()
+        
+        # Save the keys
+        try:
+            with open(private_key_path, "wb") as f:
+                f.write(private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption()
+                ))
+            with open(public_key_path, "wb") as f:
+                f.write(public_key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                ))
+            logger.info("New RSA keys generated and saved")
+        except Exception as e:
+            logger.error(f"Warning: Failed to save RSA keys: {e}")
+        
+        return private_key, public_key
+    
+    def register_public_key(self):
+        """Register the client's public key with the server."""
+        try:
+            # Convert public key to PEM format
+            public_key_pem = self.public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode('utf-8')
+            
+            # Send public key to server
+            response = requests.post(
+                f"{self.server_url}/register-public-key/",
+                json={
+                    "username": self.username,
+                    "public_key": public_key_pem
+                }
+            )
+            response.raise_for_status()
+            logger.info("Public key registered with server")
+        except Exception as e:
+            logger.error(f"Failed to register public key: {e}")
+    
+    def decrypt_challenge(self, encrypted_challenge: bytes) -> str:
+        """Decrypt a challenge using the private key."""
+        try:
+            decrypted = self.private_key.decrypt(
+                encrypted_challenge,
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+            return decrypted.decode('utf-8')
+        except Exception as e:
+            logger.error(f"Failed to decrypt challenge: {e}")
+            raise
+
 def main():
     """Main function to run the client."""
     print("Welcome to the Distributed Storage Client!")
@@ -373,8 +513,8 @@ def main():
     # Create blockchain account if connected
     if blockchain_server_url:
         try:
-            username = input("Enter your username for blockchain account: ").strip()
-            client.blockchain_address = client.create_blockchain_account(username)
+            # username = input("Enter your username for blockchain account: ").strip()
+            client.blockchain_address = client.create_blockchain_account(client.username)
             print(f"Your blockchain address: {client.blockchain_address}")
             balance = client.get_blockchain_balance(client.blockchain_address)
             print(f"Your blockchain balance: {balance}")
