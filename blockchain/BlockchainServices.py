@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+from datetime import datetime
 
 class Account:
     def __init__(self, username:str, balance: float, create_new: bool = True):
@@ -69,7 +70,8 @@ class Block:
         pass
 
     def __init__(self):
-        self.previous_hash:str = "####"
+        self.previous_hash:str ="0" * 64
+        self.timestamp:str = datetime.now().isoformat()
         self.index:int = 0
         self.block_hash = "****"
         self.transactions:list[Transaction] = []
@@ -78,11 +80,12 @@ class Block:
         """Calculate the hash of the block based on its transactions and previous hash"""
         # Create a string with all transaction data
         transaction_data = ""
-        for tx in self.transactions:
-            transaction_data += f"{tx['sender']}{tx['receiver']}{tx['amount']}{tx['receipt']}"
-        
-        # Combine with previous hash and index
+        if len(self.transactions) == Block.BLOCK_SIZE:
+            for tx in self.transactions:
+                transaction_data += f"{tx['sender']}{tx['receiver']}{tx['amount']}{tx['receipt']}"
+
         data_to_hash = f"{self.previous_hash}{self.index}{transaction_data}"
+        
         return hashlib.sha256(data_to_hash.encode()).hexdigest()
 
     def add_transaction(self, transaction: Transaction):
@@ -121,15 +124,22 @@ class Blockchain:
         with open('blockchain.json', 'w') as f:
             json.dump({'chain': self.chain}, f, indent=4)
 
+    def create_block(self) -> Block:
+        """Create a new block with the given previous hash"""
+        block = Block()
+        block.previous_hash = self.get_previous_hash()
+        block.index = len(self.chain)
+        block.block_hash = block.calculate_block_hash()
+        return block
+    
     def add_block(self, block: Block):
         # Set the block index based on the current chain length
         self._load_chain()
         block.index = len(self.chain)
-        block.previous_hash = self.latest_block_hash()
         self.chain.append(block.__dict__)
         self._save_chain()
     
-    def latest_block_hash(self):
+    def get_previous_hash(self)->str:
         self._load_chain()
         if not self.chain:
             return None  

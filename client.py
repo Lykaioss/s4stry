@@ -674,13 +674,12 @@ def main():
     while True:
         print("\nOptions:")
         print("1. Upload a file")
-        print("2. Download a file")
+        print("2. Retrieve a file")
         print("3. List unretrieved files")
-        print("4. Retrieve a file")
         if client.blockchain_conn and client.blockchain_address:
-            print("5. Check blockchain balance")
-            print("6. Send blockchain payment")
-            print("7. Exit")
+            print("4. Check blockchain balance")
+            print("5. Send blockchain payment")
+            print("6. Exit")
         else:
             print("5. Exit")
         
@@ -706,34 +705,33 @@ def main():
             except Exception as e:
                 print(f"Error: {str(e)}")
         
+        # elif choice == "2":
+        #     filename = input("Enter the filename to download: ")
+        #     output_path = input("Enter the path where you want to save the file (press Enter to use default location): ")
+        #     try:
+        #         client.download_file(filename, output_path)
+        #     except Exception as e:
+        #         print(f"Error: {str(e)}")
         elif choice == "2":
-            filename = input("Enter the filename to download: ")
-            output_path = input("Enter the path where you want to save the file (press Enter to use default location): ")
             try:
-                client.download_file(filename, output_path)
+                client.retrieve_file()
             except Exception as e:
                 print(f"Error: {str(e)}")
-        
+
         elif choice == "3":
             try:
                 client.list_unretrieved_files()
             except Exception as e:
                 print(f"Error: {str(e)}")
-        
-        elif choice == "4":
-            try:
-                client.retrieve_file()
-            except Exception as e:
-                print(f"Error: {str(e)}")
-        
-        elif choice == "5" and client.blockchain_conn and client.blockchain_address:
+
+        elif choice == "4" and client.blockchain_conn and client.blockchain_address:
             try:
                 balance = client.get_blockchain_balance(client.blockchain_address)
                 print(f"Your blockchain balance: {balance}")
             except Exception as e:
                 print(f"Error: {str(e)}")
         
-        elif choice == "6" and client.blockchain_conn and client.blockchain_address:
+        elif choice == "5" and client.blockchain_conn and client.blockchain_address:
             try:
                 receiver_address = input("Enter receiver's blockchain address: ").strip()
                 amount = float(input("Enter amount to send: "))
