@@ -4,6 +4,8 @@ import rpyc
 from rpyc.utils.server import ThreadedServer
 from BlockchainServices import Account, Transaction, Block, Blockchain
 import json
+import hashlib  # Add this import for generating transaction hashes
+from datetime import datetime
 
 def get_local_ip():
     """Get the local IP address of the machine."""
@@ -47,8 +49,8 @@ class RPyCServer(rpyc.Service):
         except Exception as e:
             raise Exception(f"Failed to get balance: {str(e)}")
     
-    def exposed_send_money(self, sender_address: str, receiver_address: str, amount: float) -> bool:
-        """Send money from one account to another"""
+    def exposed_send_money(self, sender_address: str, receiver_address: str, amount: float) -> dict:
+        """Send money from one account to another and return a transaction receipt."""
         try:
             # Create temporary account objects for the transaction without creating new accounts
             sender = Account("temp_sender", 0, create_new=False)
@@ -70,14 +72,23 @@ class RPyCServer(rpyc.Service):
                 if len(self.current_block.transactions) == Block.BLOCK_SIZE:
                     self.blockchain.add_block(self.current_block)
                     self.current_block = Block()
-                return True
             except Block.BlockFullException:
                 # If block is full, add it to blockchain and create new block
                 self.blockchain.add_block(self.current_block)
                 self.current_block = Block()
                 # Add transaction to new block
                 self.current_block.add_transaction(tx)
-                return True
+            
+            # Generate a transaction receipt
+            tx_hash = tx.receipt  # Use the receipt as the transaction hash
+            receipt = {
+                "transaction_hash": tx_hash,
+                "sender": sender_address,
+                "receiver": receiver_address,
+                "amount": amount,
+                "timestamp": datetime.now().isoformat()
+            }
+            return receipt
             
         except Exception as e:
             raise Exception(f"Failed to send money: {str(e)}")

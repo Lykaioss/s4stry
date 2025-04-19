@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
+import json  # Add this import for JSON handling
 
 # Set up basic console logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -71,27 +72,32 @@ class StorageClient:
         logger.info(f"Username: {self.username}")
     
     def get_username(self) -> str:
-        """Prompt user for username and store it."""
-        username_file = self.keys_dir / "username.txt"
+        """Prompt user for username and store it in a JSON file."""
+        user_data_file = self.keys_dir / "user_data.json"
         
-        if username_file.exists():
+        # Load existing user data if the file exists
+        if user_data_file.exists():
             try:
-                with open(username_file, 'r') as f:
-                    stored_username = f.read().strip()
+                with open(user_data_file, 'r') as f:
+                    user_data = json.load(f)
+                    stored_username = user_data.get("username")
                     if stored_username:
                         print(f"Found stored username: {stored_username}")
                         use_stored = input("Use stored username? (y/n): ").lower()
                         if use_stored == 'y':
                             return stored_username
             except Exception as e:
-                logger.error(f"Error reading stored username: {e}")
+                logger.error(f"Error reading user data file: {e}")
         
+        # Prompt for a new username if not found or not used
         while True:
             username = input("Enter your username: ").strip()
             if username:
                 try:
-                    with open(username_file, 'w') as f:
-                        f.write(username)
+                    # Save the username in the JSON file
+                    user_data = {"username": username, "upload_history": []}
+                    with open(user_data_file, 'w') as f:
+                        json.dump(user_data, f, indent=4)
                     return username
                 except Exception as e:
                     logger.error(f"Error saving username: {e}")
@@ -180,8 +186,8 @@ class StorageClient:
         # Round to 2 decimal places
         return round(total_cost, 2)
 
-    def make_payment(self, amount: float, renter_address: str) -> bool:
-        """Make a payment to a renter's blockchain address."""
+    def make_payment(self, amount: float, renter_address: str) -> str:
+        """Make a payment to a renter's blockchain address and return the transaction hash."""
         if not self.blockchain_conn or not self.blockchain_address:
             raise Exception("Blockchain not connected or account not created")
         
@@ -191,12 +197,21 @@ class StorageClient:
             if balance < amount:
                 raise ValueError(f"Insufficient balance. Required: {amount}, Available: {balance}")
             
-            # Make the payment
-            success = self.send_blockchain_payment(self.blockchain_address, renter_address, amount)
-            if success:
-                logger.info(f"Successfully paid {amount} to renter {renter_address}")
-                return True
-            return False
+            # Make the payment and get the transaction receipt
+            receipt = self.blockchain_conn.root.exposed_send_money(self.blockchain_address, renter_address, amount)
+            
+            print(f"Payment receipt: {receipt}")
+            # Convert RPyC proxy object to a standard dictionary if necessary
+            if hasattr(receipt, "items"):
+                receipt = {key: value for key, value in receipt.items()}
+            
+            # Extract the transaction hash
+            transaction_hash = receipt["transaction_hash"]
+            if not transaction_hash:
+                raise Exception("Transaction hash not found in the receipt")
+            
+            logger.info(f"Payment successful: {transaction_hash}")
+            return transaction_hash
         except Exception as e:
             logger.error(f"Payment failed: {str(e)}")
             raise
@@ -212,6 +227,8 @@ class StorageClient:
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             
             # Calculate storage cost if duration is specified
+            payment = 0
+            transaction_hash = None
             if duration_minutes is not None and duration_minutes > 0:
                 cost = self.calculate_storage_cost(file_size_mb, duration_minutes)
                 print(f"\nStorage cost for {file_size_mb:.2f} MB for {duration_minutes} minutes: {cost}")
@@ -237,8 +254,9 @@ class StorageClient:
                     print("Upload cancelled")
                     return
                 
-                # Make the payment
-                self.make_payment(cost, renter_address)
+                # Make the payment and get the transaction hash
+                transaction_hash = self.make_payment(cost, renter_address)
+                payment = cost
             
             # Create temporary encrypted file
             temp_encrypted = file_path.parent / f"encrypted_{file_path.name}"
@@ -259,6 +277,9 @@ class StorageClient:
             
             logger.info(f"File uploaded successfully: {file_path.name}")
             print(f"File uploaded successfully: {file_path.name}")
+            
+            # Update upload history
+            self.update_upload_history(file_path.name, file_size_mb, payment, transaction_hash)
             
             # If duration is specified, schedule automatic retrieval
             if duration_minutes is not None and duration_minutes > 0:
@@ -351,6 +372,9 @@ class StorageClient:
                 logger.info(f"File deleted from renters: {filename}")
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Failed to delete file from renters: {str(e)}")
+            
+            # Mark file as retrieved in upload history
+            self.mark_file_as_retrieved(filename)
             
             logger.info(f"File downloaded successfully: {filename}")
             print(f"File downloaded successfully to: {output_path}")
@@ -489,9 +513,133 @@ class StorageClient:
                 )
             )
             return decrypted.decode('utf-8')
-        except Exception as e:
-            logger.error(f"Failed to decrypt challenge: {e}")
+        except ValueError as e:
+            logger.error(f"Decryption failed due to invalid data or key mismatch: {e}")
             raise
+        except Exception as e:
+            logger.error(f"Unexpected error during decryption: {e}")
+            raise
+
+    def update_upload_history(self, file_name: str, file_size: float, payment: float, transaction_hash: str) -> None:
+        """Update the JSON file with file upload details."""
+        user_data_file = self.keys_dir / "user_data.json"
+        
+        try:
+            # Load existing user data
+            if user_data_file.exists():
+                with open(user_data_file, 'r') as f:
+                    user_data = json.load(f)
+            else:
+                user_data = {"username": self.username, "upload_history": []}
+            
+            # Add new upload details
+            upload_details = {
+                "file_name": file_name,
+                "file_size_mb": round(file_size, 2),
+                "payment": round(payment, 2),
+                "transaction_hash": transaction_hash,
+                "timestamp": datetime.now().isoformat(),  # Add timestamp for upload
+                "retrieved": False  # Set retrieved to False initially
+            }
+            user_data["upload_history"].append(upload_details)
+            
+            # Save updated data back to the file
+            with open(user_data_file, 'w') as f:
+                json.dump(user_data, f, indent=4)
+            
+            logger.info(f"Upload history updated for file: {file_name}")
+        except Exception as e:
+            logger.error(f"Error updating upload history: {e}")
+
+    def mark_file_as_retrieved(self, file_name: str) -> None:
+        """Mark a file as retrieved in the upload history."""
+        user_data_file = self.keys_dir / "user_data.json"
+        
+        try:
+            # Load existing user data
+            if user_data_file.exists():
+                with open(user_data_file, 'r') as f:
+                    user_data = json.load(f)
+            else:
+                raise FileNotFoundError("User data file not found")
+            
+            # Find the file in the upload history and update the retrieved field
+            for upload in user_data["upload_history"]:
+                if upload["file_name"] == file_name:
+                    upload["retrieved"] = True
+                    break
+            else:
+                raise ValueError(f"File '{file_name}' not found in upload history")
+            
+            # Save updated data back to the file
+            with open(user_data_file, 'w') as f:
+                json.dump(user_data, f, indent=4)
+            
+            logger.info(f"File marked as retrieved: {file_name}")
+        except Exception as e:
+            logger.error(f"Error marking file as retrieved: {e}")
+
+    def list_unretrieved_files(self) -> None:
+        """List all files from user_data.json that haven't been retrieved yet."""
+        user_data_file = self.keys_dir / "user_data.json"
+        
+        try:
+            # Load existing user data
+            if user_data_file.exists():
+                with open(user_data_file, 'r') as f:
+                    user_data = json.load(f)
+            else:
+                raise FileNotFoundError("User data file not found")
+            
+            # Filter files that haven't been retrieved
+            unretrieved_files = [
+                upload["file_name"] for upload in user_data["upload_history"] if not upload.get("retrieved", False)
+            ]
+            
+            # Print the unretrieved files
+            if unretrieved_files:
+                print("\nFiles that haven't been retrieved yet:")
+                for file_name in unretrieved_files:
+                    print(f"- {file_name}")
+            else:
+                print("\nAll files have been retrieved.")
+        except Exception as e:
+            logger.error(f"Error listing unretrieved files: {e}")
+
+    def retrieve_file(self) -> None:
+        """Handle file retrieval."""
+        try:
+            # List unretrieved files
+            self.list_unretrieved_files()
+            
+            # Ask the user for the file name to retrieve
+            file_name = input("\nEnter the name of the file you wish to retrieve: ").strip()
+            if not file_name:
+                print("File name cannot be empty.")
+                return
+
+            try:
+                # Call the download_file method to retrieve the file
+                output_path = input("Enter the path where you want to save the file (press Enter to use default location): ").strip()
+                if not output_path or output_path.strip() == "":
+                    output_path = str(self.downloads_dir / file_name)
+                    print(f"Using default download location: {output_path}")
+                elif not os.path.exists(output_path):
+                    # If the path doesn't exist, create it
+                    print(f"Specified path does not exist...Creating new directory:\n{output_path}")
+                    os.makedirs(output_path, exist_ok=True)
+                    output_path = os.path.join(output_path, file_name)
+                
+                self.download_file(file_name, output_path)
+            except Exception as e:
+                logger.error(f"Error during file retrieval: {e}")
+                print(f"Error: {e}")
+            
+            # Mark the file as retrieved
+            self.mark_file_as_retrieved(file_name)
+            print(f"File '{file_name}' has been successfully retrieved.")
+        except Exception as e:
+            logger.error(f"Error retrieving file: {e}")
 
 def main():
     """Main function to run the client."""
@@ -527,12 +675,14 @@ def main():
         print("\nOptions:")
         print("1. Upload a file")
         print("2. Download a file")
+        print("3. List unretrieved files")
+        print("4. Retrieve a file")
         if client.blockchain_conn and client.blockchain_address:
-            print("3. Check blockchain balance")
-            print("4. Send blockchain payment")
-            print("5. Exit")
+            print("5. Check blockchain balance")
+            print("6. Send blockchain payment")
+            print("7. Exit")
         else:
-            print("3. Exit")
+            print("5. Exit")
         
         choice = input("Enter your choice: ")
         
@@ -564,14 +714,26 @@ def main():
             except Exception as e:
                 print(f"Error: {str(e)}")
         
-        elif choice == "3" and client.blockchain_conn and client.blockchain_address:
+        elif choice == "3":
+            try:
+                client.list_unretrieved_files()
+            except Exception as e:
+                print(f"Error: {str(e)}")
+        
+        elif choice == "4":
+            try:
+                client.retrieve_file()
+            except Exception as e:
+                print(f"Error: {str(e)}")
+        
+        elif choice == "5" and client.blockchain_conn and client.blockchain_address:
             try:
                 balance = client.get_blockchain_balance(client.blockchain_address)
                 print(f"Your blockchain balance: {balance}")
             except Exception as e:
                 print(f"Error: {str(e)}")
         
-        elif choice == "4" and client.blockchain_conn and client.blockchain_address:
+        elif choice == "6" and client.blockchain_conn and client.blockchain_address:
             try:
                 receiver_address = input("Enter receiver's blockchain address: ").strip()
                 amount = float(input("Enter amount to send: "))
@@ -583,7 +745,7 @@ def main():
             except Exception as e:
                 print(f"Error: {str(e)}")
         
-        elif choice == "3" and not client.blockchain_conn or choice == "5" and client.blockchain_conn:
+        elif choice == "5" and not client.blockchain_conn or choice == "7" and client.blockchain_conn:
             print("Goodbye!")
             break
         
@@ -591,4 +753,4 @@ def main():
             print("Invalid choice. Please try again.")
 
 if __name__ == "__main__":
-    main() 
+    main()
