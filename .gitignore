@@ -34,4 +34,7 @@ env/
 # Project specific
 uploads/
 storage/
-*.log 
+S4S_Client/
+S4S_Renter/
+*.log
+*.json

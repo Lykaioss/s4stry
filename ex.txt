@@ -1,0 +1,297 @@
+Skip to main content
+Stack Overflow
+About
+Products
+OverflowAI
+Search…
+Home
+Questions
+Tags
+Discussions
+Labs
+Chat
+Users
+Companies
+Collectives
+Communities for your favorite technologies. Explore all Collectives
+
+Teams
+
+Ask questions, find answers and collaborate at work with Stack Overflow for Teams.
+
+ 
+
+
+
+
+can't automatically activate virtual environment in vscode
+Asked 1 year, 1 month ago
+Modified 1 year, 1 month ago
+Viewed 4k times
+1
+
+I'm trying to automatically activate the virtual environment .venv in the terminal whenever I open the VS Code workspace. I have Python installed via pyenv.
+
+I tried adding the following in both the user settings JSON file and the workspace settings JSON
+
+"python.terminal.activateEnvInCurrentTerminal": true,
+"python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+but that did not work, I still need to run source .venv/bin/activate in the terminal whenever I launch the workspace to activate the virtual environment
+
+I use pip -V in the terminal to verify which Python interpreter is being used like follows: enter image description here
+
+I want pip -V to point to my virtual environment every time I open up VS Code without the need to run source .venv/bin/activate
+
+pythonvisual-studio-codepackagepyenv
+Share
+Follow
+edited Mar 4, 2024 at 7:29
+Terry Jan Reedy's user avatar
+Terry Jan Reedy
+19.2k33 gold badges4343 silver badges5656 bronze badges
+asked Feb 20, 2024 at 9:24
+ZZZ's user avatar
+ZZZ
+15344 silver badges1111 bronze badges
+see this SO post that possibly is related: stackoverflow.com/q/78005138/13642249 – 
+kyrlon
+ CommentedMar 2, 2024 at 15:58
+Add a comment
+3 Answers
+Sorted by:
+
+Highest score (default)
+2
+
+Attempt this sanity check first by closing VS Code, opening a terminal, and executing the following (I'm assuming you use poetry to create the venv environment, if not, use your method):
+
+mkdir test
+cd test
+poetry new .
+poetry env use "$(which python3)"
+poetry install
+touch ./test/main.py
+code .
+This should open VS Code into the newly created project. In the Explorer, expand the "test" folder and open main.py
+
+Assuming you have Microsoft's Python Extension installed, you should receive a message like this, assuming you haven't previously clicked "Don't show again":
+
+enter image description here
+
+You should also see some details about the .venv environment in the status bar at the bottom: enter image description here
+
+This is BEFORE you open a terminal.
+
+If you did not at least see the status information, verify that you have Microsoft's Python Extension installed and that it hasn't somehow become disabled (I know, I know, but I have to say this). Maybe even uninstall and re-install just for completeness sake.
+
+Otherwise:
+
+CMD + Shift + P to open the Command Palette, type in "Preferences: Open Default Settings (JSON)", and hit Enter Ctrl + f to open the little find dialog box, type in venv,and hit Enter
+
+Verify your settings mirror these:
+
+    // Folders in your home directory to look into for virtual environments (supports pyenv, direnv and virtualenvwrapper by default).
+    "python.venvFolders": [],
+
+    // Path to folder with a list of Virtual Environments (e.g. ~/.pyenv, ~/Envs, ~/.virtualenvs).
+    "python.venvPath": "",
+If everything looks okay, there's one last place to look and that's within the extensions' own settings:
+
+Go to Extensions, select "Python", click the little gear icon, and choose "Extension Settings".
+
+Look for "Python -> Terminal: Activate Environment" and make sure that is enabled. Also look for "Python: Venv Path" and make sure that is blank.
+
+Hopefully you're reached this point and fixed the misconfiguration if there was one, or maybe this all worked out of the gate and the problem only seems to be with that one project. If so:
+
+Close VS Code, open a terminal, and cd to ~/Library/Application Support/Code/User/workspaceStorage
+
+Each of the folders here hold settings for each of the workspaces you've opened. It's where VS Code stores most of the state information about the code, outside of the .vscode/settings.json file. If you do a ls -latr, it should sort them by date with the newest at the bottom -- this will help you with the following:
+
+Use cat to print out the workspace.json file in some of the newer folders to find which is for your project -- You'll know when you've found the right folder when you find the file with a path to your troubled workspace.
+
+Rename whatever folder that is to something else -- like "backup". The next time you open VS Code and open that workspace, VS Code should see it for the first time again and configure all of the default settings for it. See if the venv detection works now.
+
+Share
+Follow
+edited Mar 4, 2024 at 1:47
+answered Mar 4, 2024 at 0:14
+Mr. Man's user avatar
+Mr. Man
+15588 bronze badges
+Add a comment
+0
+
+This setting works if you have created virtual environments for each workspace. But for the python executable in the virtual environment folder, the path should be "${workspaceFolder}\\.venv\\Scripts\\python". there is no bin folder in the virtual environment folder.
+
+Also, in the previous update, a new terminal automatically activates the environment, but the environment name is not displayed in front of the terminal directory.
+
+enter image description here
+
+Share
+Follow
+answered Feb 21, 2024 at 6:58
+JialeDu's user avatar
+JialeDu
+10k22 gold badges1414 silver badges3333 bronze badges
+I use macOS, its .venv/bin/python – 
+ZZZ
+ CommentedFeb 21, 2024 at 9:39
+So why do you think it doesn't work? What's the gap between your desired effect and the displayed effect? – 
+JialeDu
+ CommentedFeb 22, 2024 at 7:09
+when I open up my workspace, I run pip -V in the terminal to verify that my virtual environment is active, but for some reason, pip -V shows the path to the pyenv. so i need to run "source .venv/bin/activate" to activate my virtual environment, after that pip -V shows the correct path - i added an image to my question for clarification – 
+ZZZ
+ CommentedFeb 22, 2024 at 9:29
+You need to select the virtual environment interpreter and then create a new terminal to automatically activate the environment. Also the defaultInterpreterPath setting only works for brand new workspaces with no interpreter selected, if you manually select a different interpreter it fails. – 
+JialeDu
+ CommentedFeb 28, 2024 at 7:32
+Add a comment
+0
+
+You can create a custom task that will run source .venv/bin/activate whenever you open a folder.
+
+To do that you can go File -> Preferenses -> User Tasks and there add a new custom task like this:
+
+    {
+        "label": "Virtual Environment Activation",
+        "type": "shell",
+        "command": "source",
+        "args": [
+            ".venv\\Scripts\\python",
+        ],
+        "runOptions": {
+            "runOn": "folderOpen"
+        }
+    },
+Now, the task will automatically be sent to the shell whenever you open a folder. You can obviously tweak this task according to your own preferences, but this simple one should do the job.
+
+Also, note that your "args": might need to be .venv/bin/activate with single slashes instead of \\. I just don't know how it better works on Mac
+
+Share
+Follow
+answered Feb 27, 2024 at 16:00
+user23403909's user avatar
+user23403909
+322 bronze badges
+Add a comment
+Your Answer
+ 
+
+  
+Sign up or log in
+Post as a guest
+Name
+Email
+Required, but never shown
+
+By clicking “Post Your Answer”, you agree to our terms of service and acknowledge you have read our privacy policy.
+
+Start asking to get answers
+
+Find the answer to your question by asking.
+
+Explore related questions
+
+pythonvisual-studio-codepackagepyenv
+See similar questions with these tags.
+
+The Overflow Blog
+Wait, what is agentic AI?
+Generating components, not tokens
+Featured on Meta
+Changes to reporting for the [status-review] escalation process
+A discussion about closed (and potentially useful) posts on Stack Overflow
+7 people chatting
+Python
+41 mins ago - PM 2Ring
+roganjosh: 1 hour ago
+MisterMiyagi: 17 hours ago
+Peilonrayz: 19 hours ago
+VLAZ: 19 hours ago
+Hakaishin: yesterday
+ThiefMaster: Apr 14 at 22:51
+metatoaster: Mar 5 at 18:11
+Linked
+2
+Make venv default terminal for Project in VSCode
+Related
+3419
+How can I access environment variables in Python?
+285
+Issue with virtualenv - cannot activate
+504
+Using Pip to install packages to Anaconda Environment
+1058
+Remove trailing spaces automatically or with a shortcut
+161
+How do I activate a virtualenv inside PyCharm's terminal?
+149
+VSCode: There is no Pip installer available in the selected environment
+1471
+Automatically create file 'requirements.txt'
+988
+How do you format code in Visual Studio Code (VSCode)?
+1080
+How to hide specified files/directories (e.g., .git) in the sidebar? (VSCode)
+643
+Differences between distribute, distutils, setuptools and distutils2?
+Hot Network Questions
+Shimano Alivio front derailleur rotating - how to fix it?
+Is there any direct inspiration for the costume that Boy Thunder wears in “World's Finest” or is it just a generic costume in the Silver Age style?
+What changes between loops in Outer Wilds?
+Confusions about “the support of a function” in Munkres' “Analysis on Manifolds”
+SDDM login screen is broken after updating to Kubuntu 25.04 (plucky)
+Some actions for you to handle
+Are there any flight data sites that let you check which flight is less or more >crowded<?
+Gray-out Text and Icons in Light Theme in Blender 4.3.2
+ancient preservative method for animal fur and skin to help as artifact display?
+Do claims made in the abstract have to be repeated (and cited) in the main text?
+How can I turn my MacBook into a Wi-Fi hotspot?
+My name has a non English character - will identity check by a human always be required?
+"I did once hold it, as our statists do, a baseness to write fair" in "Hamlet"
+What exactly does it mean to be having a wattless current?
+What can cause a phalanx/shieldwall to drift left-wards
+MySQL: Why the "use" command does not require ";" to be executed?
+Did Einstein and Nietzsche make these quotes about Dostoevsky?
+Why isn't a critical point for a differentiable map just defined to be a point where the differential is identically zero?
+A space opera where it was almost impossible to commit treason against the Galactic Empire
+Is it a crime if the target is no longer valid?
+Is logical reasoning deterministic?
+How can I get rid off unexpected holes appear on ContourPlot?
+What is the source and reason as to why after someone gives a dvar torah they say רבי חנניה בן עקשיא וכו?
+MySQL: How to export the output for a non SQL query sentence?
+ Question feed
+
+Stack Overflow
+Questions
+Help
+Chat
+Products
+Teams
+Advertising
+Talent
+Company
+About
+Press
+Work Here
+Legal
+Privacy Policy
+Terms of Service
+Contact Us
+Cookie Settings
+Cookie Policy
+Stack Exchange Network
+Technology
+Culture & recreation
+Life & arts
+Science
+Professional
+Business
+API
+Data
+Blog
+Facebook
+Twitter
+LinkedIn
+Instagram
+Site design / logo © 2025 Stack Exchange Inc; user contributions licensed under CC BY-SA . rev 2025.4.17.25340

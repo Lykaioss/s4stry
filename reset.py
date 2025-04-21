@@ -42,7 +42,6 @@ def reset_project():
         # Clear client downloads
         print("\nDeleting Directories...")
         for directory in directories_to_delete:
-            print(f"Deleting {directory}")
             if os.path.exists(directory):
                 shutil.rmtree(directory)
                 print(f"Deleted {directory}")

@@ -33,7 +33,7 @@ class StorageClient:
         self.blockchain_address = None
         if blockchain_server_url:
             try:
-                self.blockchain_conn = rpyc.connect(blockchain_server_url, 7575)
+                self.blockchain_conn = self.connect_to_blockchain(blockchain_server_url)
                 logger.info("Connected to blockchain server")
             except Exception as e:
                 logger.error(f"Failed to connect to blockchain server: {str(e)}")
@@ -70,6 +70,25 @@ class StorageClient:
         logger.info(f"Downloads directory: {self.downloads_dir}")
         logger.info(f"Keys directory: {self.keys_dir}")
         logger.info(f"Username: {self.username}")
+    
+    def connect_to_blockchain(self, blockchain_url: str):
+        """Connect to the blockchain server."""
+        try:
+            # Validate the blockchain_url format
+            if ":" not in blockchain_url:
+                raise ValueError("Invalid blockchain URL format. Expected format: <hostname>:<port> (e.g., 192.168.0.217:18861)")
+
+            # Split the URL into hostname and port
+            hostname, port = blockchain_url.split(":")
+            port = int(port)  # Ensure the port is an integer
+
+            # Connect to the blockchain server
+            connection = rpyc.connect(hostname, port)
+            return connection
+        except ValueError as ve:
+            raise Exception(f"Invalid blockchain URL: {ve}")
+        except Exception as e:
+            raise Exception(f"Failed to connect to blockchain server at {blockchain_url}: {e}")
     
     def get_username(self) -> str:
         """Prompt user for username and store it in a JSON file."""
