@@ -16,10 +16,13 @@ import random
 import socket
 import asyncio
 import rpyc
+import hashlib
+from merkle_tree import MerkleTree
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes
 import base64
+import zfec
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -50,10 +53,13 @@ shard_locations: Dict[str, List[dict]] = {}
 racks: Dict[str, Set[str]] = defaultdict(set)  # rack_id -> set of renter_ids
 
 # Sharding configuration
-SHARD_SIZE = 1024 * 1024  # 1MB per shard
+BASE_SHARD_SIZE = 1024 * 1024  # 1MB per shard
+MAX_SHARD_SIZE = 5 * 1024 * 1024
 MIN_SHARDS = 3  # Minimum number of shards to create
 REPLICATION_FACTOR = 3  # Number of copies for each shard
 RACK_COUNT = 3  # Number of racks in the system
+ERASURE_K = 3  # Number of data shards
+ERASURE_M = 2  # Number of parity shards
 
 # Renter management
 RENTER_TIMEOUT = 60  # seconds
@@ -153,22 +159,66 @@ def get_renters_for_shard(shard_index: int, num_shards: int) -> List[str]:
     
     return selected_renters
 
+def apply_erasure_coding(shards: List[Path]) -> List[Path]:
+    """Apply Reed-Solomon erasure coding to generate parity shards."""
+    k, m = ERASURE_K, ERASURE_M
+    data_shards = []
+    
+    # Read shard data
+    for shard_path in shards:
+        with open(shard_path, 'rb') as f:
+            data_shards.append(f.read())
+    
+    # Pad shards to equal length
+    max_length = max(len(shard) for shard in data_shards)
+    data_shards = [shard.ljust(max_length, b'\0') for shard in data_shards]
+    
+    # Apply Reed-Solomon encoding
+    encoder = zfec.Encoder(k, k + m)
+    encoded_shards = encoder.encode(data_shards)
+    
+    # Save encoded shards
+    result_shards = []
+    for i, shard_data in enumerate(encoded_shards):
+        shard_path = UPLOAD_DIR / f"shard_{i}_encoded_{shards[0].name}"
+        with open(shard_path, 'wb') as f:
+            f.write(shard_data)
+        result_shards.append(shard_path)
+    
+    return result_shards
+
+def generate_merkle_tree(shards: List[Path]) -> str:
+    """Generate a Merkle tree for the shards and return the root hash"""
+    merkle_tree = MerkleTree()
+    for shard_path in shards:
+        with open(shard_path, 'rb') as f:
+            shard_data = f.read()
+            shard_hash = hashlib.sha256(shard_data).hexdigest()
+            merkle_tree.add_leaf(shard_hash)
+    merkle_tree.build()
+    return merkle_tree.get_root()
+
 def split_file_into_shards(file_path: Path, num_shards: int) -> List[Path]:
     """Split a file into multiple shards."""
     shards = []
     file_size = os.path.getsize(file_path)
+
+    target_shard_size = min(MAX_SHARD_SIZE, max(BASE_SHARD_SIZE, file_size // MIN_SHARDS))
+    num_shards = max(MIN_SHARDS, math.ceil(file_size / target_shard_size))
     shard_size = math.ceil(file_size / num_shards)
+    logger.info(f"Splitting file {file_path} into {num_shards} shards of ~{shard_size / (1024 * 1024):.2f} MB each")
     
     with open(file_path, 'rb') as f:
         for i in range(num_shards):
             shard_path = UPLOAD_DIR / f"shard_{i}_{file_path.name}"
             with open(shard_path, 'wb') as shard_file:
-                shard_file.write(f.read(shard_size))
+                shard_data = f.read(shard_size)
+                shard_file.write(shard_data)
             shards.append(shard_path)
     
     return shards
 
-def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict]:
+def distribute_shards_to_renters(shards: List[Path], filename: str, merkle_root: str) -> List[dict]:
     """Distribute shards and their replicas across renters."""
     distributed_shards = []
     num_shards = len(shards)
@@ -187,6 +237,7 @@ def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict
                     response = requests.post(
                         f"{renter['url']}/store-shard/",
                         files=files,
+                        data={"merkle_root": merkle_root},
                         timeout=30
                     )
                     response.raise_for_status()
@@ -195,7 +246,8 @@ def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict
                     "renter_id": renter_id,
                     "shard_path": shard_name,
                     "shard_index": i,
-                    "replica_index": replica_index
+                    "replica_index": replica_index,
+                    "merkle_root": merkle_root
                 })
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error sending shard to renter: {str(e)}")
@@ -275,8 +327,10 @@ async def upload_file(file: UploadFile = File(...)):
         
         # Calculate number of shards based on file size
         file_size = os.path.getsize(temp_path)
-        num_shards = max(MIN_SHARDS, math.ceil(file_size / SHARD_SIZE))
-        
+        if file_size == 0:
+            raise HTTPException(status_code=400, detail="Cannot upload empty file")
+        num_shards = max(MIN_SHARDS, math.ceil(file_size / BASE_SHARD_SIZE))
+
         # Calculate actual replication factor based on available renters
         actual_replication = min(REPLICATION_FACTOR, len(renters))
         logger.info(f"Splitting file into {num_shards} shards with replication factor {actual_replication}")
@@ -284,10 +338,19 @@ async def upload_file(file: UploadFile = File(...)):
         # Split file into shards
         shards = split_file_into_shards(temp_path, num_shards)
         logger.info(f"Created {len(shards)} shards")
-        
+
+        # Generate Merkle tree
+        merkle_root = generate_merkle_tree(shards)
+        logger.info(f"Merkle root for {file.filename}: {merkle_root}")
+
+        # Apply erasure coding
+        encoded_shards = apply_erasure_coding(shards)
+        logger.info(f"Generated {len(encoded_shards)} encoded shards with erasure coding")
+
+       
         # Distribute shards to renters with replication
         logger.info("Starting shard distribution to renters")
-        distributed_shards = distribute_shards_to_renters(shards, file.filename)
+        distributed_shards = distribute_shards_to_renters(encoded_shards, file.filename, merkle_root)
         logger.info(f"Successfully distributed shards: {distributed_shards}")
         
         # Store shard information
@@ -297,7 +360,8 @@ async def upload_file(file: UploadFile = File(...)):
             "filename": file.filename,
             "num_shards": num_shards,
             "replication_factor": actual_replication,
-            "shard_size": SHARD_SIZE,
+            "shard_size": encoded_shards[0].stat().st_size if encoded_shards else 0,
+            "merkle_root": merkle_root,
             "message": f"File uploaded and distributed successfully with replication factor {actual_replication}"
         }
     except Exception as e:
@@ -312,7 +376,7 @@ async def upload_file(file: UploadFile = File(...)):
             except Exception as e:
                 logger.error(f"Error cleaning up temporary file {temp_path}: {str(e)}")
         
-        for shard in shards:
+        for shard in shards + (encoded_shards if 'encoded_shards' in locals() else []):
             if os.path.exists(shard):
                 try:
                     os.remove(shard)
@@ -382,6 +446,9 @@ async def download_file(filename: str, username: str):
             
             # Sort shards by shard_index and replica_index
             shards.sort(key=lambda x: (x['shard_index'], x['replica_index']))
+
+            retrieved_shards = {}
+            merkle_root = shards[0].get("merkle_root")
             
             # Track which shards we've successfully retrieved
             retrieved_shards = set()
@@ -407,26 +474,58 @@ async def download_file(filename: str, username: str):
                     
                     response = requests.get(
                         f"{renter_url}/retrieve-shard/",
-                        params={'filename': shard['shard_path']},
+                        params={'filename': shard['shard_path'], 'merkle_root': merkle_root},
                         timeout=30
                     )
                     response.raise_for_status()
                     
-                    # Write shard to reconstructed file
-                    reconstructed_file.write(response.content)
+                    shard_data = response.content
+                    shard_hash = hashlib.sha256(shard_data).hexdigest()
+                    
+                    merkle_tree = MerkleTree()
+                    for i in range(len(shards)):
+                        if i == shard_index:
+                            merkle_tree.add_leaf(shard_hash)
+                        else:
+                            merkle_tree.add_leaf(hashlib.sha256(b"").hexdigest()) 
+                    merkle_tree.build()
+                    if merkle_tree.get_root() != merkle_root:
+                        logger.warning(f"Shard {shard['shard_path']} failed Merkle verification")
+                        continue
+
+                    retrieved_shards[shard_index] = shard_data
                     retrieved_shards.add(shard_index)
                     logger.info(f"Successfully retrieved shard {shard['shard_path']} from renter {renter_id}")
                     
                 except Exception as e:
-                    logger.error(f"Error retrieving shard from renter {renter_id}: {str(e)}")
+                    logger.error(f"Error retrieving shard {shard['shard_path']} from renter {renter_id}: {str(e)}")
                     continue
             
-            # Check if we got all shards
-            if len(retrieved_shards) != len(set(s['shard_index'] for s in shards)):
+            # Attempt partial recovery with erasure coding
+            k, m = ERASURE_K, ERASURE_M
+            total_shards = k + m
+            if len(retrieved_shards) == 0:
                 raise HTTPException(
                     status_code=500,
-                    detail="Failed to retrieve all shards"
+                    detail="Failed to retrieve any valid shards due to Merkle verification failures"
                 )
+            
+            if len(retrieved_shards) < k:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Insufficient shards retrieved: {len(retrieved_shards)}/{k} required"
+                )
+            
+            # Reconstruct file using Reed-Solomon
+            decoder = zfec.Decoder(k, k + m)
+            shard_data_list = [retrieved_shards.get(i, b'\0' * len(list(retrieved_shards.values())[0])) for i in range(total_shards)]
+            reconstructed_shards = decoder.decode(shard_data_list, [i for i in retrieved_shards.keys()])
+            
+            # Write reconstructed file
+            with open(temp_file, 'wb') as reconstructed_file:
+                for shard_data in reconstructed_shards[:k]:
+                    reconstructed_file.write(shard_data.rstrip(b'\0'))
+        
         
         # Generate a random nonce
         nonce = str(uuid.uuid4())

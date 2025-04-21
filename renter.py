@@ -12,9 +12,12 @@ import logging
 import threading
 import time
 import socket
+import hashlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 import rpyc
+from merkle_tree import MerkleTree
+from fastapi import Form
 
 # Set up basic console logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -221,12 +224,18 @@ async def read_root():
     }
 
 @app.post("/store-shard/")
-async def store_shard(file: UploadFile = File(...)):
+async def store_shard(file: UploadFile = File(...), merkle_root: str = Form(None)):
     """Store a shard of a file."""
     try:
         file_path = STORAGE_DIR / file.filename
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        
+        metadata_path = STORAGE_DIR / f"{file.filename}.meta"
+        with open(metadata_path, "w") as f:
+            json.dump({"merkle_root": merkle_root}, f)
+        
+        logger.info(f"Stored shard: {file.filename} with Merkle root: {merkle_root}")
         logger.info(f"Stored shard: {file.filename}")
         return {"message": "Shard stored successfully", "filename": file.filename}
     except Exception as e:
@@ -234,13 +243,41 @@ async def store_shard(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/retrieve-shard/")
-async def retrieve_shard(filename: str):
+async def retrieve_shard(filename: str, merkle_root: str = None):
     """Retrieve a shard of a file."""
     try:
         file_path = STORAGE_DIR / filename
         if not file_path.exists():
             logger.error(f"Shard not found: {filename}")
             raise HTTPException(status_code=404, detail="Shard not found")
+        
+        metadata_path = STORAGE_DIR / f"{filename}.meta"
+        stored_merkle_root = None
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+                stored_merkle_root = metadata.get("merkle_root")
+        
+        if merkle_root and stored_merkle_root and merkle_root != stored_merkle_root:
+            logger.error(f"Merkle root mismatch for shard: {filename}")
+            raise HTTPException(status_code=400, detail="Merkle root mismatch")
+        
+        # Verify shard integrity
+        with open(file_path, "rb") as f:
+            shard_data = f.read()
+            shard_hash = hashlib.sha256(shard_data).hexdigest()
+        
+        if merkle_root:
+            # For now, assumes the Merkle root includes this shard's hash
+            # @todo Future enhancement: store leaf hashes in metadata for proper verification
+            merkle_tree = MerkleTree()
+            merkle_tree.add_leaf(shard_hash)
+            for _ in range(4): 
+                merkle_tree.add_leaf(hashlib.sha256(b"").hexdigest())
+            merkle_tree.build()
+            if merkle_tree.get_root() != merkle_root:
+                logger.error(f"Shard {filename} failed Merkle verification")
+                raise HTTPException(status_code=400, detail="Shard verification failed")
         logger.info(f"Retrieved shard: {filename}")
         return FileResponse(path=file_path, filename=filename)
     except Exception as e:
@@ -252,12 +289,15 @@ async def delete_shard(filename: str):
     """Delete a shard from the renter's storage."""
     try:
         file_path = STORAGE_DIR / filename
+        metadata_path = STORAGE_DIR / f"{filename}.meta"
         if not file_path.exists():
             logger.error(f"Shard not found: {filename}")
             raise HTTPException(status_code=404, detail="Shard not found")
         
         # Delete the shard file
         os.remove(file_path)
+        if metadata_path.exists():
+            os.remove(metadata_path)
         logger.info(f"Deleted shard: {filename}")
         
         return {"message": f"Shard '{filename}' deleted successfully"}
