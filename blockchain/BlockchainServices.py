@@ -15,41 +15,38 @@ class Account:
         return hashlib.sha256(username.encode()).hexdigest()
     
     def _save_account(self):
-        # Read existing accounts
-        accounts = {}
-        if os.path.exists('wallets.json'):
-            with open('wallets.json', 'r') as f:
-                try:
-                    accounts = json.load(f)
-                except json.JSONDecodeError:
-                    accounts = {}
+        # Read existing blockchain
+        blockchain = Blockchain()
+        blockchain._load_chain()
         
-        # Update or add account
-        accounts[self.address] = self.balance
+        # Check if account already exists
+        if self.address in blockchain.wallets:
+            raise ValueError(f"Account with username '{self.username}' already exists")
         
-        # Write back to file
-        with open('wallets.json', 'w') as f:
-            json.dump(accounts, f, indent=4)
-    
+        # Update or add account to blockchain's wallets
+        blockchain.wallets[self.address] = self.balance
+        
+        # Save the updated blockchain
+        blockchain._save_chain()
 
     def send_money(self, receiver: Account, amount: float):
         if self.balance < amount:
             raise ValueError("Insufficient balance")   
         self.balance -= amount
-        self._save_account()
-        # Update receiver.address's balance
-        accounts = {}
-        if os.path.exists('wallets.json'):
-            with open('wallets.json', 'r') as f:
-                try:
-                    accounts = json.load(f)
-                except json.JSONDecodeError:
-                    accounts = {}
-        receiver_balance = accounts.get(receiver.address, 0)
-        accounts[receiver.address] = receiver_balance + amount
         
-        with open('wallets.json', 'w') as f:
-            json.dump(accounts, f, indent=4)
+        # Update blockchain wallets
+        blockchain = Blockchain()
+        blockchain._load_chain()
+        
+        # Update sender's balance
+        blockchain.wallets[self.address] = self.balance
+        
+        # Update receiver's balance
+        receiver_balance = blockchain.wallets.get(receiver.address, 0)
+        blockchain.wallets[receiver.address] = receiver_balance + amount
+        
+        # Save the updated blockchain
+        blockchain._save_chain()
 
 
 class Transaction:
@@ -108,21 +105,28 @@ class Block:
 
 class Blockchain:
     def __init__(self):
-        self.chain:list[Block] = []
+        self.chain = []
+        self.wallets = {}  # New wallets dictionary
         self._load_chain()
     
     def _load_chain(self):
         if os.path.exists('blockchain.json'):
             with open('blockchain.json', 'r') as f:
                 try:
-                    chain_data = json.load(f)
-                    self.chain = chain_data.get('chain', [])
+                    data = json.load(f)
+                    self.chain = data.get('chain', [])
+                    self.wallets = data.get('wallets', {})  # Load wallets from blockchain
                 except json.JSONDecodeError:
                     self.chain = []
+                    self.wallets = {}
     
     def _save_chain(self):
+        data = {
+            'chain': self.chain,
+            'wallets': self.wallets  # Save wallets with blockchain
+        }
         with open('blockchain.json', 'w') as f:
-            json.dump({'chain': self.chain}, f, indent=4)
+            json.dump(data, f, indent=4)
 
     def create_block(self) -> Block:
         """Create a new block with the given previous hash"""

@@ -39,14 +39,59 @@ stop_heartbeat = threading.Event()
 blockchain_conn = None
 blockchain_address = None
 
+def create_blockchain_account(username: str, initial_balance: float = 1000.0) -> str:
+    """Create a new blockchain account."""
+    try:
+        if not blockchain_conn:
+            raise Exception("Not connected to blockchain server")
+        
+        # Call the remote create_account method
+        response = blockchain_conn.root.exposed_create_account(username, initial_balance)
+        
+        if response["status"] == "error":
+            logger.error(f"Failed to create blockchain account: {response['message']}")
+            raise Exception(response["message"])
+        
+        address = response["address"]
+        logger.info(f"Created blockchain account with address: {address}")
+        return address
+    except Exception as e:
+        logger.error(f"Failed to create blockchain account: {str(e)}")
+        raise
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    global blockchain_conn, blockchain_address
+    
+    # Connect to blockchain server if URL provided
+    if blockchain_server_url:
+        try:
+            blockchain_conn = rpyc.connect(blockchain_server_url, 7575)
+            logger.info("Connected to blockchain server")
+            
+            # Create blockchain account for renter
+            try:
+                blockchain_address = create_blockchain_account(f"renter_{get_local_ip()}")
+                logger.info(f"Renter blockchain address: {blockchain_address}")
+            except Exception as e:
+                logger.error(f"Failed to create blockchain account: {str(e)}")
+                logger.info("Continuing without blockchain functionality")
+                blockchain_conn = None
+        except Exception as e:
+            logger.error(f"Failed to connect to blockchain server: {str(e)}")
+            logger.info("Continuing without blockchain functionality")
+    
+    # Register with storage server
     register_with_server()
+    
+    # Start heartbeat thread
     global heartbeat_thread
     heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
     heartbeat_thread.start()
+    
     yield
+    
     # Shutdown
     stop_heartbeat.set()
     if heartbeat_thread:
@@ -174,34 +219,49 @@ HEARTBEAT_INTERVAL = 30  # seconds
 def register_with_server():
     """Register this renter with the server."""
     try:
-        logger.info(f"Registering with server at {SERVER_URL}")
-        logger.info(f"Renter URL: {RENTER_URL}")
-        logger.info(f"Storage available: {STORAGE_AVAILABLE:,} bytes")
+        # Get local IP and port
+        local_ip = get_local_ip()
+        local_port = 8001  # Renter port
         
+        # Prepare registration data
+        registration_data = {
+            "renter_id": str(uuid.uuid4()),
+            "ip_address": local_ip,
+            "port": local_port,
+            "blockchain_address": str(blockchain_address) if blockchain_address else None,  # Convert to string if exists
+            "storage_available": STORAGE_AVAILABLE
+        }
+        
+        # Send registration request
         response = requests.post(
             f"{SERVER_URL}/register-renter/",
-            json={
-                "renter_id": RENTER_ID,
-                "url": RENTER_URL,
-                "storage_available": STORAGE_AVAILABLE,
-                "blockchain_address": blockchain_address if blockchain_conn else None
-            }
+            json=registration_data
         )
         response.raise_for_status()
-        logger.info("Successfully registered with server")
+        
+        logger.info(f"Successfully registered with server at {SERVER_URL}")
+        logger.info(f"Renter ID: {registration_data['renter_id']}")
+        logger.info(f"IP Address: {local_ip}")
+        logger.info(f"Port: {local_port}")
+        if blockchain_address:
+            logger.info(f"Blockchain Address: {blockchain_address}")
     except Exception as e:
         logger.error(f"Failed to register with server: {str(e)}")
+        raise
 
 def send_heartbeat():
     """Send periodic heartbeat to server to maintain active status."""
     while not stop_heartbeat.is_set():
         try:
+            heartbeat_data = {
+                "renter_id": RENTER_ID,
+                "blockchain_address": str(blockchain_address) if blockchain_address else None,
+                "storage_available": STORAGE_AVAILABLE
+            }
+            
             response = requests.post(
                 f"{SERVER_URL}/heartbeat/",
-                json={
-                    "renter_id": RENTER_ID,
-                    "blockchain_address": blockchain_address if blockchain_conn else None
-                }
+                json=heartbeat_data
             )
             response.raise_for_status()
             logger.debug("Heartbeat sent successfully")

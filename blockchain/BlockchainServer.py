@@ -6,6 +6,7 @@ from BlockchainServices import Account, Transaction, Blockchain
 import json
 from datetime import datetime
 import os
+import hashlib
 
 def get_local_ip():
     """Get the local IP address of the machine."""
@@ -32,22 +33,42 @@ class RPyCServer(rpyc.Service):
         # Load the current block or create a new one
         self.load_current_block()
 
-    def exposed_create_account(self, username: str, initial_balance: float) -> str:
-        """Create a new account and return its address."""
+    def exposed_create_account(self, username: str, initial_balance: float) -> dict:
+        """Create a new account and return its address or error message if account exists."""
         try:
+            # First check if account exists
+            self.blockchain._load_chain()
+            address = hashlib.sha256(username.encode()).hexdigest()
+            
+            if address in self.blockchain.wallets:
+                return {
+                    "status": "error",
+                    "message": f"Account with username '{username}' already exists",
+                    "address": None
+                }
+            
+            # If account doesn't exist, create it
             account = Account(username, initial_balance)
-            return account.address
+            return {
+                "status": "success",
+                "message": "Account created successfully",
+                "address": account.address
+            }
         except Exception as e:
-            raise Exception(f"Failed to create account: {str(e)}")
+            return {
+                "status": "error",
+                "message": f"Failed to create account: {str(e)}",
+                "address": None
+            }
 
     def exposed_get_balance(self, address: str) -> float:
         """Get the balance of an account."""
         try:
-            accounts = {}
-            if os.path.exists('wallets.json'):
-                with open('wallets.json', 'r') as f:
-                    accounts = json.load(f)
-            return accounts.get(address, 0.0)
+            self.blockchain._load_chain()  # Reload to get latest state
+            if isinstance(address, dict):
+                # If address is a dict, extract the actual address string
+                address = address.get('address', '')
+            return self.blockchain.wallets.get(address, 0.0)
         except Exception as e:
             raise Exception(f"Failed to get balance: {str(e)}")
 

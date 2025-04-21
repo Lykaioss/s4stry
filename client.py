@@ -397,11 +397,19 @@ class StorageClient:
 
     def create_blockchain_account(self, username: str, initial_balance: float = 1000.0) -> str:
         """Create a new blockchain account."""
-        if not self.blockchain_conn:
-            raise Exception("Blockchain server not connected")
         try:
-            address = self.blockchain_conn.root.exposed_create_account(username, initial_balance)
-            logger.info(f"Created blockchain account for {username}")
+            if not self.blockchain_conn:
+                raise Exception("Not connected to blockchain server")
+            
+            # Call the remote create_account method
+            response = self.blockchain_conn.root.exposed_create_account(username, initial_balance)
+            
+            if response["status"] == "error":
+                logger.error(f"Failed to create blockchain account: {response['message']}")
+                raise Exception(response["message"])
+            
+            address = response["address"]
+            logger.info(f"Created blockchain account with address: {address}")
             return address
         except Exception as e:
             logger.error(f"Failed to create blockchain account: {str(e)}")
