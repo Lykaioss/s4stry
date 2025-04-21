@@ -1,8 +1,10 @@
 # rpc_client.py
 import rpyc
 
+from BlockchainServices import Account
+
 def main():
-    ADDR, PORT = "192.168.0.103", 7575
+    ADDR, PORT = "192.168.0.217", 7575
     try:
         # Connect to the server
         print("Connecting to blockchain server...")
@@ -47,6 +49,8 @@ def main():
         print("Latest block:", latest_block)
         
     except Exception as e:
+        if isinstance(e, Account.AccountExists):
+            print(f"Account with address {e.address} already exists.")
         print(f"Error: {e}")
     finally:
         if 'conn' in locals():

@@ -33,12 +33,14 @@ class RPyCServer(rpyc.Service):
         self.load_current_block()
 
     def exposed_create_account(self, username: str, initial_balance: float) -> str:
-        """Create a new account and return its address."""
+        """Create a new blockchain account or return an existing one."""
         try:
             account = Account(username, initial_balance)
             return account.address
-        except Exception as e:
-            raise Exception(f"Failed to create account: {str(e)}")
+        except Account.AccountExists as e:
+            # Log the exception and return the existing account's address
+            print(f"Account already exists: {e.address}")
+            return e.address
 
     def exposed_get_balance(self, address: str) -> float:
         """Get the balance of an account."""

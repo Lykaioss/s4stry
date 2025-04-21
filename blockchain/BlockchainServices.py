@@ -1,15 +1,29 @@
 from __future__ import annotations
 import json
+from operator import add
 import os
 import hashlib
 from datetime import datetime
+from turtle import st
+
+
 
 class Account:
+
+    class AccountExists(Exception):
+        def __init__(self, address: str):
+            self.address = address
+            self.message = f"Account with address {self.address} already exists."
+            super().__init__(self.message)  # Pass the message to the base Exception class
+
     def __init__(self, username: str, balance: float, create_new: bool = True):
         self.address = self._calc_address(username)
         self.balance = balance
         if create_new:
-            self._save_account()
+            if self.account_exists():
+                raise self.AccountExists(address=self.address)  # Pass the address directly
+            else:
+                self._save_account()
 
     def _calc_address(self, username):
         return hashlib.sha256(username.encode()).hexdigest()
@@ -42,6 +56,11 @@ class Account:
         # Save back to blockchain.json
         with open("blockchain.json", "w") as f:
             json.dump(data, f, indent=4)
+
+    def account_exists(self) -> bool:
+        """Check if the account exists in the wallets field of blockchain.json."""
+        wallets = self._load_wallets()
+        return self.address in wallets
 
     def _save_account(self):
         """Save the account to the wallets field in blockchain.json."""
@@ -177,35 +196,5 @@ class Blockchain:
     
 if __name__ == "__main__":
     acc1 = Account("123", 100)
-    acc2 = Account("456", 200)
-
-    blockchain = Blockchain()
-
-    genesis_block = Block()
-    blockchain.add_block(genesis_block)
-
-    # blockchain.show_chain()
-    block1 = Block()
-
-    acc2.send_money(acc1, 50)
-    tx1 = Transaction(acc2.address, acc1.address, 50)
-    block1.add_transaction(tx1)
-    
-
-    acc1.send_money(acc2, 80)
-    tx2 = Transaction(acc1.address, acc2.address, 80)
-    block1.add_transaction(tx2)
-
-    acc3 = Account("789", 400)
-    acc3.send_money(acc1, 200)
-    tx3 = Transaction(acc3.address, acc1.address, 200)
-    block1.add_transaction(tx3)
-
-    blockchain.add_block(block1)
-
-    block2 = Block()
-    print(block2.__dict__)
-    #print(block2.transactions)
-    blockchain.add_block(block2)
-
+    acc2 = Account("123", 200)
 

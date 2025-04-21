@@ -1,3 +1,4 @@
+from re import A
 import requests
 import os
 from pathlib import Path
@@ -14,7 +15,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
-import json  # Add this import for JSON handling
+import json
+
+from blockchain.BlockchainServices import Account  # Add this import for JSON handling
 
 # Set up basic console logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -404,8 +407,7 @@ class StorageClient:
             logger.info(f"Created blockchain account for {username}")
             return address
         except Exception as e:
-            logger.error(f"Failed to create blockchain account: {str(e)}")
-            raise
+                raise Exception(e)
 
     def get_blockchain_balance(self, address: str) -> float:
         """Get the balance of a blockchain account."""
@@ -661,15 +663,17 @@ def main():
     # Create blockchain account if connected
     if blockchain_server_url:
         try:
-            # username = input("Enter your username for blockchain account: ").strip()
             client.blockchain_address = client.create_blockchain_account(client.username)
             print(f"Your blockchain address: {client.blockchain_address}")
             balance = client.get_blockchain_balance(client.blockchain_address)
             print(f"Your blockchain balance: {balance}")
         except Exception as e:
-            print(f"Error setting up blockchain account: {str(e)}")
-            print("Blockchain features will not be available")
-            client.blockchain_conn = None  # Disable blockchain features
+            if isinstance(e, Account.AccountExists):  # Ensure it's not the AccountExists exception
+                print("This username already exists. Please use a different username.")
+            else:
+                print(f"Error setting up blockchain account: {str(e)}")
+                print("Blockchain features will not be available")
+                client.blockchain_conn = None  # Disable blockchain features
     
     while True:
         print("\nOptions:")
@@ -743,7 +747,7 @@ def main():
             except Exception as e:
                 print(f"Error: {str(e)}")
         
-        elif choice == "5" and not client.blockchain_conn or choice == "7" and client.blockchain_conn:
+        elif choice == "4" and not client.blockchain_conn or choice == "6" and client.blockchain_conn:
             print("Goodbye!")
             break
         
