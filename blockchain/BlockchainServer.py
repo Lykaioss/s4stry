@@ -43,28 +43,48 @@ class RPyCServer(rpyc.Service):
     def exposed_get_balance(self, address: str) -> float:
         """Get the balance of an account."""
         try:
-            accounts = {}
-            if os.path.exists('wallets.json'):
-                with open('wallets.json', 'r') as f:
-                    accounts = json.load(f)
-            return accounts.get(address, 0.0)
+            # Load wallets from blockchain.json
+            if os.path.exists("blockchain.json"):
+                with open("blockchain.json", "r") as f:
+                    data = json.load(f)
+                    wallets = data.get("wallets", {})
+            else:
+                wallets = {}
+
+            # Return the balance for the given address
+            return wallets.get(address, 0.0)
         except Exception as e:
             raise Exception(f"Failed to get balance: {str(e)}")
 
     def exposed_send_money(self, sender_address: str, receiver_address: str, amount: float) -> dict:
         """Send money from one account to another and return a transaction receipt."""
         try:
-            # Create temporary account objects for the transaction
-            sender = Account("temp_sender", 0, create_new=False)
-            sender.address = sender_address
-            sender.balance = self.exposed_get_balance(sender_address)
+            # Load wallets from blockchain.json
+            if os.path.exists("blockchain.json"):
+                with open("blockchain.json", "r") as f:
+                    data = json.load(f)
+                    wallets = data.get("wallets", {})
+            else:
+                wallets = {}
 
-            receiver = Account("temp_receiver", 0, create_new=False)
-            receiver.address = receiver_address
-            receiver.balance = self.exposed_get_balance(receiver_address)
+            # Validate sender's balance
+            sender_balance = wallets.get(sender_address, 0.0)
+            if sender_balance < amount:
+                raise ValueError("Insufficient balance")
 
-            # Perform the transaction
-            sender.send_money(receiver, amount)
+            # Update balances
+            wallets[sender_address] = sender_balance - amount
+            wallets[receiver_address] = wallets.get(receiver_address, 0.0) + amount
+
+            # Save updated wallets back to blockchain.json
+            if os.path.exists("blockchain.json"):
+                with open("blockchain.json", "r") as f:
+                    data = json.load(f)
+            else:
+                data = {}
+            data["wallets"] = wallets
+            with open("blockchain.json", "w") as f:
+                json.dump(data, f, indent=4)
 
             # Create a new transaction
             tx = Transaction(sender_address, receiver_address, amount)

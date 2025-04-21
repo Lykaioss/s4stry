@@ -5,51 +5,62 @@ import hashlib
 from datetime import datetime
 
 class Account:
-    def __init__(self, username:str, balance: float, create_new: bool = True):
+    def __init__(self, username: str, balance: float, create_new: bool = True):
         self.address = self._calc_address(username)
         self.balance = balance
         if create_new:
             self._save_account()
-    
+
     def _calc_address(self, username):
         return hashlib.sha256(username.encode()).hexdigest()
-    
-    def _save_account(self):
-        # Read existing accounts
-        accounts = {}
-        if os.path.exists('wallets.json'):
-            with open('wallets.json', 'r') as f:
+
+    def _load_wallets(self):
+        """Load wallets from the blockchain.json file."""
+        if os.path.exists("blockchain.json"):
+            with open("blockchain.json", "r") as f:
                 try:
-                    accounts = json.load(f)
+                    data = json.load(f)
+                    return data.get("wallets", {})
                 except json.JSONDecodeError:
-                    accounts = {}
-        
-        # Update or add account
-        accounts[self.address] = self.balance
-        
-        # Write back to file
-        with open('wallets.json', 'w') as f:
-            json.dump(accounts, f, indent=4)
-    
+                    return {}
+        return {}
+
+    def _save_wallets(self, wallets):
+        """Save wallets to the blockchain.json file."""
+        if os.path.exists("blockchain.json"):
+            with open("blockchain.json", "r") as f:
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError:
+                    data = {}
+        else:
+            data = {}
+
+        # Update the wallets field
+        data["wallets"] = wallets
+
+        # Save back to blockchain.json
+        with open("blockchain.json", "w") as f:
+            json.dump(data, f, indent=4)
+
+    def _save_account(self):
+        """Save the account to the wallets field in blockchain.json."""
+        wallets = self._load_wallets()
+        wallets[self.address] = self.balance
+        self._save_wallets(wallets)
 
     def send_money(self, receiver: Account, amount: float):
+        """Send money to another account."""
         if self.balance < amount:
-            raise ValueError("Insufficient balance")   
+            raise ValueError("Insufficient balance")
         self.balance -= amount
         self._save_account()
-        # Update receiver.address's balance
-        accounts = {}
-        if os.path.exists('wallets.json'):
-            with open('wallets.json', 'r') as f:
-                try:
-                    accounts = json.load(f)
-                except json.JSONDecodeError:
-                    accounts = {}
-        receiver_balance = accounts.get(receiver.address, 0)
-        accounts[receiver.address] = receiver_balance + amount
-        
-        with open('wallets.json', 'w') as f:
-            json.dump(accounts, f, indent=4)
+
+        # Update the receiver's balance
+        wallets = self._load_wallets()
+        receiver_balance = wallets.get(receiver.address, 0)
+        wallets[receiver.address] = receiver_balance + amount
+        self._save_wallets(wallets)
 
 
 class Transaction:
@@ -108,41 +119,54 @@ class Block:
 
 class Blockchain:
     def __init__(self):
-        self.chain:list[Block] = []
+        self.chain: list[Block] = []
         self._load_chain()
-    
+
     def _load_chain(self):
-        if os.path.exists('blockchain.json'):
-            with open('blockchain.json', 'r') as f:
+        if os.path.exists("blockchain.json"):
+            with open("blockchain.json", "r") as f:
                 try:
                     chain_data = json.load(f)
-                    self.chain = chain_data.get('chain', [])
+                    self.chain = chain_data.get("chain", [])
                 except json.JSONDecodeError:
                     self.chain = []
-    
+
     def _save_chain(self):
-        with open('blockchain.json', 'w') as f:
-            json.dump({'chain': self.chain}, f, indent=4)
+        if os.path.exists("blockchain.json"):
+            with open("blockchain.json", "r") as f:
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError:
+                    data = {}
+        else:
+            data = {}
+
+        # Update the chain field
+        data["chain"] = self.chain
+
+        # Save back to blockchain.json
+        with open("blockchain.json", "w") as f:
+            json.dump(data, f, indent=4)
 
     def create_block(self) -> Block:
-        """Create a new block with the given previous hash"""
+        """Create a new block with the given previous hash."""
         block = Block()
         block.previous_hash = self.get_previous_hash()
         block.index = len(self.chain)
         block.block_hash = block.calculate_block_hash()
         return block
-    
+
     def add_block(self, block: Block):
         # Set the block index based on the current chain length
         self._load_chain()
         block.index = len(self.chain)
         self.chain.append(block.__dict__)
         self._save_chain()
-    
-    def get_previous_hash(self)->str:
+
+    def get_previous_hash(self) -> str:
         self._load_chain()
         if not self.chain:
-            return None  
+            return None
         latest_block = self.chain[-1]
         return latest_block["block_hash"]
 
@@ -183,5 +207,5 @@ if __name__ == "__main__":
     print(block2.__dict__)
     #print(block2.transactions)
     blockchain.add_block(block2)
-    
+
 
