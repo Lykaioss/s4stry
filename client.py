@@ -95,8 +95,12 @@ class StorageClient:
         # Prompt for a new username if not found or not used
         while True:
             username = input("Enter your username: ").strip()
+           
             if username:
                 try:
+                    nonce = random.randint(100000, 999999)  # Generate a random 6-digit nonce
+                    username = f"{username}+{nonce}"
+                    print(f"Your unique username is: {username}\nKindly remember the six trailing digits as your special key")
                     # Save the username in the JSON file
                     user_data = {"username": username, "upload_history": []}
                     with open(user_data_file, 'w') as f:
@@ -608,21 +612,17 @@ class StorageClient:
         except Exception as e:
             logger.error(f"Error listing unretrieved files: {e}")
 
-    def retrieve_file(self) -> None:
+    def retrieve_file(self, file_name, output_path=None) -> None:
         """Handle file retrieval."""
         try:
             # List unretrieved files
             self.list_unretrieved_files()
-            
             # Ask the user for the file name to retrieve
-            file_name = input("\nEnter the name of the file you wish to retrieve: ").strip()
             if not file_name:
                 print("File name cannot be empty.")
                 return
-
             try:
                 # Call the download_file method to retrieve the file
-                output_path = input("Enter the path where you want to save the file (press Enter to use default location): ").strip()
                 if not output_path or output_path.strip() == "":
                     output_path = str(self.downloads_dir / file_name)
                     print(f"Using default download location: {output_path}")
@@ -708,17 +708,12 @@ def main():
                 client.upload_file(file_path, duration_minutes)
             except Exception as e:
                 print(f"Error: {str(e)}")
-        
-        # elif choice == "2":
-        #     filename = input("Enter the filename to download: ")
-        #     output_path = input("Enter the path where you want to save the file (press Enter to use default location): ")
-        #     try:
-        #         client.download_file(filename, output_path)
-        #     except Exception as e:
-        #         print(f"Error: {str(e)}")
+
         elif choice == "2":
             try:
-                client.retrieve_file()
+                file_name = input("\nEnter the name of the file you wish to retrieve: ").strip()
+                output_path = input("Enter the path where you want to save the file (press Enter to use default location): ").strip()
+                client.retrieve_file(file_name, output_path)
             except Exception as e:
                 print(f"Error: {str(e)}")
 
