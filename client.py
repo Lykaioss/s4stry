@@ -24,32 +24,20 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 class StorageClient:
-    def __init__(self, server_url: str, blockchain_server_url: str = None):
+    def __init__(self, server_url: str, blockchain_server_url: str = None, username: str = None):
         """Initialize the storage client with the server URL."""
         # Ensure server_url has a scheme
         if not server_url.startswith(('http://', 'https://')):
             server_url = f"http://{server_url}"
         self.server_url = server_url.rstrip('/')  # Remove trailing slash if present
         
-        # Initialize blockchain connection if URL provided
-        self.blockchain_conn = None
-        self.blockchain_address = None
-        if blockchain_server_url:
-            try:
-                self.blockchain_conn = rpyc.connect(blockchain_server_url, 7575)
-                logger.info("Connected to blockchain server")
-            except Exception as e:
-                logger.error(f"Failed to connect to blockchain server: {str(e)}")
-        
-        # Create base client directory
+        # Create necessary directories first
         self.base_dir = Path("S4S_Client")
         self.base_dir.mkdir(exist_ok=True)
         
-        # Create downloads directory
         self.downloads_dir = self.base_dir / "downloads"
         self.downloads_dir.mkdir(exist_ok=True)
         
-        # Create keys directory
         self.keys_dir = self.base_dir / "keys"
         self.keys_dir.mkdir(exist_ok=True)
         
@@ -59,23 +47,57 @@ class StorageClient:
         # Load or generate RSA keys
         self.private_key, self.public_key = self.load_or_generate_rsa_keys()
         
-        # Get username from user
-        self.username = self.get_username()
+        # Get username first (needed for both blockchain and regular operations)
+        self.username = self.get_username(username)
+        
+        # Initialize blockchain connection if URL provided
+        self.blockchain_conn = None
+        self.blockchain_address = None
+        self.blockchain_connection_error = None
+        
+        if blockchain_server_url:
+            try:
+                host = blockchain_server_url.strip()
+                port = 7575
+                logger.info(f"Attempting to connect to blockchain server at {host}:{port}")
+                self.blockchain_conn = rpyc.connect(host, port, config={"sync_request_timeout": 10})
+                logger.info("Connected to blockchain server")
+                
+                # Try to create blockchain account or get existing one
+                try:
+                    # Try to create a new account
+                    self.blockchain_address = self.create_blockchain_account(self.username)
+                    logger.info(f"Created new blockchain account: {self.blockchain_address}")
+                except Exception as e:
+                    if "Account already exists" in str(e):
+                        # If account exists, try to get the address from the blockchain server
+                        try:
+                            self.blockchain_address = self.blockchain_conn.root.exposed_get_account_address(self.username)
+                            logger.info(f"Retrieved existing blockchain account: {self.blockchain_address}")
+                        except Exception as acc_e:
+                            logger.error(f"Failed to retrieve existing account: {str(acc_e)}")
+                            raise
+                    else:
+                        raise
+                
+            except Exception as e:
+                error_msg = f"Failed to connect to blockchain server at {blockchain_server_url}: {str(e)}"
+                logger.error(error_msg)
+                self.blockchain_connection_error = error_msg
         
         # Register public key with server
         self.register_public_key()
-        
-        # Dictionary to track scheduled retrievals
-        self.scheduled_retrievals = {}
         
         logger.info(f"Initialized client with server URL: {self.server_url}")
         logger.info(f"Base directory: {self.base_dir}")
         logger.info(f"Downloads directory: {self.downloads_dir}")
         logger.info(f"Keys directory: {self.keys_dir}")
         logger.info(f"Username: {self.username}")
+        if self.blockchain_address:
+            logger.info(f"Blockchain address: {self.blockchain_address}")
     
-    def get_username(self) -> str:
-        """Prompt user for username and store it in a JSON file."""
+    def get_username(self, provided_username=None) -> str:
+        """Get or verify username from user_data.json."""
         user_data_file = self.keys_dir / "user_data.json"
         
         # Load existing user data if the file exists
@@ -85,32 +107,20 @@ class StorageClient:
                     user_data = json.load(f)
                     stored_username = user_data.get("username")
                     if stored_username:
-                        print(f"Found stored username: {stored_username}")
-                        use_stored = input("Use stored username? (y/n): ").lower()
-                        if use_stored == 'y':
+                        # If username is provided and matches stored, use it
+                        if provided_username and provided_username == stored_username:
+                            return stored_username
+                        # If no username provided, use stored
+                        elif not provided_username:
                             return stored_username
             except Exception as e:
                 logger.error(f"Error reading user data file: {e}")
         
-        # Prompt for a new username if not found or not used
-        while True:
-            username = input("Enter your username: ").strip()
-           
-            if username:
-                try:
-                    nonce = random.randint(100000, 999999)  # Generate a random 6-digit nonce
-                    username = f"{username}{nonce}"
-                    print(f"Your unique username is: {username}\nKindly remember the six trailing digits as your special key")
-                    # Save the username in the JSON file
-                    user_data = {"username": username, "upload_history": []}
-                    with open(user_data_file, 'w') as f:
-                        json.dump(user_data, f, indent=4)
-                    return username
-                except Exception as e:
-                    logger.error(f"Error saving username: {e}")
-                    print("Username will not be saved for future use")
-                    return username
-            print("Username cannot be empty. Please try again.")
+        # If we get here, either no stored username or new username provided
+        if provided_username:
+            return provided_username
+        else:
+            raise ValueError("Username is required for initialization")
     
     def generate_key(self, password: str) -> bytes:
         """Generate a Fernet key from a password."""
@@ -222,7 +232,7 @@ class StorageClient:
             logger.error(f"Payment failed: {str(e)}")
             raise
 
-    def upload_file(self, file_path: str, duration_minutes: int = None) -> None:
+    def upload_file(self, file_path: str, duration_minutes: int = None, payment_confirmation_callback=None) -> None:
         """Upload a file to the storage system."""
         try:
             t0 = time.time()  # Start the timer for performance measurement
@@ -243,7 +253,6 @@ class StorageClient:
             transaction_hash = None
             if duration_minutes is not None and duration_minutes > 0:
                 cost = self.calculate_storage_cost(file_size_mb, duration_minutes)
-                print(f"\nStorage cost for {file_size_mb:.2f} MB for {duration_minutes} minutes: {cost}")
                 
                 # Get renter information from server
                 response = requests.get(f"{self.server_url}/get-renters/")
@@ -260,11 +269,13 @@ class StorageClient:
                 if not renter_address:
                     raise Exception("Selected renter has no blockchain address")
                 
-                # Ask for confirmation
-                confirm = input(f"Confirm payment of {cost} to renter {renter_address}? (y/n): ").lower()
-                if confirm != 'y':
-                    print("Upload cancelled")
-                    return
+                # Use callback for payment confirmation if provided
+                if payment_confirmation_callback:
+                    confirmed = payment_confirmation_callback(cost, renter_address)
+                    if not confirmed:
+                        raise Exception("Payment cancelled by user")
+                else:
+                    raise Exception("Payment confirmation callback not provided")
                 
                 # Make the payment and get the transaction hash
                 transaction_hash = self.make_payment(cost, renter_address)
@@ -409,15 +420,17 @@ class StorageClient:
             raise
 
     def create_blockchain_account(self, username: str, initial_balance: float = 1000.0) -> str:
-        """Create a new blockchain account."""
+        """Create a new blockchain account with proper error handling."""
         if not self.blockchain_conn:
             raise Exception("Blockchain server not connected")
         try:
             address = self.blockchain_conn.root.exposed_create_account(username, initial_balance)
-            logger.info(f"Created blockchain account for {username}")
             return address
         except Exception as e:
-                raise Exception(e)
+            if "Account already exists" in str(e):
+                raise
+            logger.error(f"Failed to create blockchain account: {str(e)}")
+            raise Exception(f"Failed to create blockchain account: {str(e)}")
 
     def get_blockchain_balance(self, address: str) -> float:
         """Get the balance of a blockchain account."""
