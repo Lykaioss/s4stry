@@ -206,8 +206,7 @@ class StorageClient:
             
             # Make the payment and get the transaction receipt
             receipt = self.blockchain_conn.root.exposed_send_money(self.blockchain_address, renter_address, amount)
-            
-            print(f"Payment receipt: {receipt}")
+
             # Convert RPyC proxy object to a standard dictionary if necessary
             if hasattr(receipt, "items"):
                 receipt = {key: value for key, value in receipt.items()}
@@ -233,6 +232,11 @@ class StorageClient:
             
             # Get file size in MB
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            
+            # Enforce minimum file size of 5 MB
+            MIN_FILE_SIZE_MB = 5
+            if file_size_mb < MIN_FILE_SIZE_MB:
+                raise ValueError(f"File size must be at least {MIN_FILE_SIZE_MB} MB. Current file size: {file_size_mb:.2f} MB")
             
             # Calculate storage cost if duration is specified
             payment = 0

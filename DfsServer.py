@@ -52,6 +52,7 @@ racks: Dict[str, Set[str]] = defaultdict(set)  # rack_id -> set of renter_ids
 # Sharding configuration
 SHARD_SIZE = 1024 * 1024  # 1MB per shard
 MIN_SHARDS = 3  # Minimum number of shards to create
+MAX_SHARDS = 10  # Maximum number of shards to create
 REPLICATION_FACTOR = 3  # Number of copies for each shard
 RACK_COUNT = 3  # Number of racks in the system
 
@@ -275,7 +276,7 @@ async def upload_file(file: UploadFile = File(...)):
         
         # Calculate number of shards based on file size
         file_size = os.path.getsize(temp_path)
-        num_shards = max(MIN_SHARDS, math.ceil(file_size / SHARD_SIZE))
+        num_shards = max(MIN_SHARDS, min(MAX_SHARDS, math.ceil(file_size / SHARD_SIZE)))
         
         # Calculate actual replication factor based on available renters
         actual_replication = min(REPLICATION_FACTOR, len(renters))
@@ -596,4 +597,4 @@ if __name__ == "__main__":
     connect_to_blockchain_server()
     
     print("\nPress Ctrl+C to stop the server")
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)
