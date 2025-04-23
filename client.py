@@ -99,7 +99,7 @@ class StorageClient:
             if username:
                 try:
                     nonce = random.randint(100000, 999999)  # Generate a random 6-digit nonce
-                    username = f"{username}+{nonce}"
+                    username = f"{username}{nonce}"
                     print(f"Your unique username is: {username}\nKindly remember the six trailing digits as your special key")
                     # Save the username in the JSON file
                     user_data = {"username": username, "upload_history": []}
@@ -226,6 +226,7 @@ class StorageClient:
     def upload_file(self, file_path: str, duration_minutes: int = None) -> None:
         """Upload a file to the storage system."""
         try:
+            t0 = time.time()  # Start the timer for performance measurement
             file_path = Path(file_path)
             if not file_path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
@@ -282,8 +283,9 @@ class StorageClient:
             # Clean up temporary file
             os.remove(temp_encrypted)
             
-            logger.info(f"File uploaded successfully: {file_path.name}")
-            print(f"File uploaded successfully: {file_path.name}")
+            t1 = time.time()  # End the timer
+            elapsed_time = t1 - t0
+            logger.info(f"File uploaded successfully (time taken: {elapsed_time} seconds): {file_path.name}")
             
             # Update upload history
             self.update_upload_history(file_path.name, file_size_mb, payment, transaction_hash)
@@ -615,6 +617,7 @@ class StorageClient:
     def retrieve_file(self, file_name, output_path=None) -> None:
         """Handle file retrieval."""
         try:
+            t0 = time.time()  # Start the timer for performance measurement
             # List unretrieved files
             self.list_unretrieved_files()
             # Ask the user for the file name to retrieve
@@ -639,7 +642,10 @@ class StorageClient:
             
             # Mark the file as retrieved
             self.mark_file_as_retrieved(file_name)
-            print(f"File '{file_name}' has been successfully retrieved.")
+
+            t1 = time.time()
+            elapsed_time = t1 - t0
+            logger.info(f"File {file_name} retrieved successfully (time taken: {elapsed_time} seconds)")
         except Exception as e:
             logger.error(f"Error retrieving file: {e}")
 
