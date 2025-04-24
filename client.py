@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 class StorageClient:
-    def __init__(self, server_url: str, blockchain_server_url: str = None):
+    def __init__(self, username, server_url: str, blockchain_server_url: str = None):
         """Initialize the storage client with the server URL."""
         # Ensure server_url has a scheme
         if not server_url.startswith(('http://', 'https://')):
@@ -36,7 +36,10 @@ class StorageClient:
         self.blockchain_address = None
         if blockchain_server_url:
             try:
-                self.blockchain_conn = rpyc.connect(blockchain_server_url, 7575)
+                if blockchain_server_url.startswith(('http://', 'https://')):
+                    blockchain_server_url = blockchain_server_url.split("://")[1]
+                blockchain_server_url, blockchain_port = blockchain_server_url.strip().split(":")
+                self.blockchain_conn = rpyc.connect(blockchain_server_url, blockchain_port)
                 logger.info("Connected to blockchain server")
             except Exception as e:
                 logger.error(f"Failed to connect to blockchain server: {str(e)}")
@@ -60,7 +63,12 @@ class StorageClient:
         self.private_key, self.public_key = self.load_or_generate_rsa_keys()
         
         # Get username from user
-        self.username = self.get_username()
+        try:
+            self.username = self.create_username(username) # creates username, adds nonce and saves it.
+            print(f"Your username is: {self.username}")
+        except ValueError as e:
+            print(f"Username cannot be empty. Please try again.")
+            raise e
         
         # Register public key with server
         self.register_public_key()
@@ -74,43 +82,36 @@ class StorageClient:
         logger.info(f"Keys directory: {self.keys_dir}")
         logger.info(f"Username: {self.username}")
     
-    def get_username(self) -> str:
+    def create_username(self, username) -> str:
         """Prompt user for username and store it in a JSON file."""
         user_data_file = self.keys_dir / "user_data.json"
-        
         # Load existing user data if the file exists
         if user_data_file.exists():
             try:
+                print(f"Loading existing user data from {user_data_file}...")
                 with open(user_data_file, 'r') as f:
                     user_data = json.load(f)
                     stored_username = user_data.get("username")
                     if stored_username:
                         print(f"Found stored username: {stored_username}")
-                        use_stored = input("Use stored username? (y/n): ").lower()
-                        if use_stored == 'y':
-                            return stored_username
+                        return stored_username
             except Exception as e:
                 logger.error(f"Error reading user data file: {e}")
-        
-        # Prompt for a new username if not found or not used
-        while True:
-            username = input("Enter your username: ").strip()
            
-            if username:
-                try:
-                    nonce = random.randint(100000, 999999)  # Generate a random 6-digit nonce
-                    username = f"{username}{nonce}"
-                    print(f"Your unique username is: {username}\nKindly remember the six trailing digits as your special key")
-                    # Save the username in the JSON file
-                    user_data = {"username": username, "upload_history": []}
-                    with open(user_data_file, 'w') as f:
-                        json.dump(user_data, f, indent=4)
-                    return username
-                except Exception as e:
-                    logger.error(f"Error saving username: {e}")
-                    print("Username will not be saved for future use")
-                    return username
-            print("Username cannot be empty. Please try again.")
+        if username:
+            try:
+                nonce = random.randint(100000, 999999)  # Generate a random 6-digit nonce
+                username = f"{username}{nonce}"
+                # Save the username in the JSON file
+                user_data = {"username": username, "upload_history": []}
+                with open(user_data_file, 'w') as f:
+                    json.dump(user_data, f, indent=4)
+                return username
+            except Exception as e:
+                logger.error(f"Error saving username: {e}")
+                print("Username will not be saved for future use")
+                return username
+        raise ValueError("Username cannot be empty. Please try again.")
     
     def generate_key(self, password: str) -> bytes:
         """Generate a Fernet key from a password."""
@@ -665,10 +666,13 @@ def main():
         print("Server URL cannot be empty. Please try again.")
     
     # Get blockchain server URL
-    blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100) [Press Enter to skip]: ").strip()
+    blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100:7575) [Press Enter to skip]: ").strip()
+    
+    # Get username from user
+    username = input("Enter your username: ").strip()
     
     # Initialize client
-    client = StorageClient(server_url, blockchain_server_url)
+    client = StorageClient(username, server_url, blockchain_server_url)
     
     # Create blockchain account if connected
     if blockchain_server_url:
@@ -695,7 +699,7 @@ def main():
             print("5. Send blockchain payment")
             print("6. Exit")
         else:
-            print("5. Exit")
+            print("4. Exit")
         
         choice = input("Enter your choice: ")
         
