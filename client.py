@@ -1,4 +1,5 @@
 from re import A
+from turtle import st
 import requests
 import os
 from pathlib import Path
@@ -23,6 +24,16 @@ from blockchain.BlockchainServices import Account  # Add this import for JSON ha
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
+def stopwatch(func):
+    def wrapper(*args, **kwargs):
+        t0 = time.time()
+        print("Starting stopwatch...")
+        func(*args, **kwargs)
+        t1 = time.time()
+        elapsed_time = t1 - t0
+        print("function {} time: {:.2f} seconds".format(func.__name__,elapsed_time))
+    return wrapper
+
 class StorageClient:
     def __init__(self, username, server_url: str, blockchain_server_url: str = None):
         """Initialize the storage client with the server URL."""
@@ -36,9 +47,12 @@ class StorageClient:
         self.blockchain_address = None
         if blockchain_server_url:
             try:
-                if blockchain_server_url.startswith(('http://', 'https://')):
-                    blockchain_server_url = blockchain_server_url.split("://")[1]
-                blockchain_server_url, blockchain_port = blockchain_server_url.strip().split(":")
+            # Remove any protocol prefix and port if present
+                blockchain_server_url = blockchain_server_url.replace('http://', '').replace('https://', '')
+                if ':' in blockchain_server_url:
+                    blockchain_server_url, blockchain_port = blockchain_server_url.split(':')
+                else:
+                    blockchain_port = 7575  # Default port for blockchain server
                 self.blockchain_conn = rpyc.connect(blockchain_server_url, blockchain_port)
                 logger.info("Connected to blockchain server")
             except Exception as e:
@@ -183,10 +197,20 @@ class StorageClient:
         thread.start()
         print(f"File '{filename}' will be automatically retrieved after {duration_minutes} minutes")
     
-    def calculate_storage_cost(self, file_size_mb: float, duration_minutes: int) -> float:
+    def calculate_storage_cost(self, file_path: str, duration_minutes: int) -> float:
         """Calculate the cost of storing a file based on size and duration."""
+        if duration_minutes is None or duration_minutes <= 0:
+            raise ValueError("Duration must be greater than 0 minutes")
+                
         # Base cost per MB per minute
         BASE_COST_PER_MB_PER_MINUTE = 0.01  # $0.01 per MB per minute
+
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+            
+        # Get file size in MB
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         
         # Calculate total cost
         total_cost = file_size_mb * duration_minutes * BASE_COST_PER_MB_PER_MINUTE
@@ -222,11 +246,11 @@ class StorageClient:
         except Exception as e:
             logger.error(f"Payment failed: {str(e)}")
             raise
-
-    def upload_file(self, file_path: str, duration_minutes: int = None) -> None:
+    
+    @stopwatch
+    def upload_file(self, file_path: str, cost, duration_minutes: int = 1) -> None:
         """Upload a file to the storage system."""
         try:
-            t0 = time.time()  # Start the timer for performance measurement
             file_path = Path(file_path)
             if not file_path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
@@ -242,34 +266,31 @@ class StorageClient:
             # Calculate storage cost if duration is specified
             payment = 0
             transaction_hash = None
-            if duration_minutes is not None and duration_minutes > 0:
-                cost = self.calculate_storage_cost(file_size_mb, duration_minutes)
-                print(f"\nStorage cost for {file_size_mb:.2f} MB for {duration_minutes} minutes: {cost}")
                 
-                # Get renter information from server
-                response = requests.get(f"{self.server_url}/get-renters/")
-                response.raise_for_status()
-                renters = response.json()
-                
-                if not renters:
-                    raise Exception("No renters available")
-                
-                # Select a random renter to pay
-                renter = random.choice(renters)
-                renter_address = renter.get('blockchain_address')
-                
-                if not renter_address:
-                    raise Exception("Selected renter has no blockchain address")
-                
-                # Ask for confirmation
-                confirm = input(f"Confirm payment of {cost} to renter {renter_address}? (y/n): ").lower()
-                if confirm != 'y':
-                    print("Upload cancelled")
-                    return
-                
-                # Make the payment and get the transaction hash
-                transaction_hash = self.make_payment(cost, renter_address)
-                payment = cost
+            # Get renter information from server
+            response = requests.get(f"{self.server_url}/get-renters/")
+            response.raise_for_status()
+            renters = response.json()
+            
+            if not renters:
+                raise Exception("No renters available")
+            
+            # Select a random renter to pay
+            renter = random.choice(renters)
+            renter_address = renter.get('blockchain_address')
+            
+            if not renter_address:
+                raise Exception("Selected renter has no blockchain address")
+            
+            # Ask for confirmation
+            confirm = input(f"Confirm payment of {cost} to renter {renter_address}? (y/n): ").lower()
+            if confirm != 'y':
+                print("Upload cancelled")
+                return
+            
+            # Make the payment and get the transaction hash
+            transaction_hash = self.make_payment(cost, renter_address)
+            payment = cost
             
             # Create temporary encrypted file
             temp_encrypted = file_path.parent / f"encrypted_{file_path.name}"
@@ -287,11 +308,7 @@ class StorageClient:
             
             # Clean up temporary file
             os.remove(temp_encrypted)
-            
-            t1 = time.time()  # End the timer
-            elapsed_time = t1 - t0
-            logger.info(f"File uploaded successfully (time taken: {elapsed_time} seconds): {file_path.name}")
-            
+                       
             # Update upload history
             self.update_upload_history(file_path.name, file_size_mb, payment, transaction_hash)
             
@@ -622,7 +639,6 @@ class StorageClient:
     def retrieve_file(self, file_name, output_path=None) -> None:
         """Handle file retrieval."""
         try:
-            t0 = time.time()  # Start the timer for performance measurement
             # List unretrieved files
             self.list_unretrieved_files()
             # Ask the user for the file name to retrieve
@@ -648,9 +664,6 @@ class StorageClient:
             # Mark the file as retrieved
             self.mark_file_as_retrieved(file_name)
 
-            t1 = time.time()
-            elapsed_time = t1 - t0
-            logger.info(f"File {file_name} retrieved successfully (time taken: {elapsed_time} seconds)")
         except Exception as e:
             logger.error(f"Error retrieving file: {e}")
 
@@ -707,9 +720,9 @@ def main():
             file_path = input("Enter the path to the file you want to upload: ")
             while True:
                 try:
-                    duration_input = input("Enter duration in minutes after which to automatically retrieve the file (0 for no auto-retrieval): ").strip()
+                    duration_input = input("Enter duration in minutes after which to automatically retrieve the file (1 minute minimum): ").strip()
                     if not duration_input:
-                        duration_minutes = None
+                        duration_minutes = 1
                         break
                     duration_minutes = int(duration_input)
                     if duration_minutes >= 0:
@@ -719,7 +732,8 @@ def main():
                     print("Please enter a valid number.")
             
             try:
-                client.upload_file(file_path, duration_minutes)
+                cost = client.calculate_storage_cost(file_path, duration_minutes)
+                client.upload_file(file_path, cost, duration_minutes)
             except Exception as e:
                 print(f"Error: {str(e)}")
 

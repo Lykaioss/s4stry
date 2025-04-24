@@ -61,7 +61,7 @@ RENTER_TIMEOUT = 60  # seconds
 
 # Blockchain configuration
 blockchain_conn = None
-blockchain_server_url = None
+blockchain_url = None
 
 # Store public keys for clients
 client_public_keys: Dict[str, str] = {}  # username -> public_key_pem
@@ -72,19 +72,20 @@ PUBLIC_KEYS_FILE = Path("client_public_keys.json")
 # Store active challenges
 active_challenges: Dict[str, str] = {}  # username -> nonce
 
-def connect_to_blockchain_server():
+def connect_to_blockchain_server(blockchain_server_url: str = None):
     """Connect to the blockchain server."""
-    global blockchain_conn, blockchain_server_url
+    global blockchain_conn, blockchain_url
     try:
-        blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100) [Press Enter to skip]: ").strip()
         if blockchain_server_url:
             # Remove any protocol prefix and port if present
             blockchain_server_url = blockchain_server_url.replace('http://', '').replace('https://', '')
             if ':' in blockchain_server_url:
-                blockchain_server_url = blockchain_server_url.split(':')[0]
-            
-            blockchain_conn = rpyc.connect(blockchain_server_url, 7575)
-            logger.info(f"Connected to blockchain server at {blockchain_server_url}:7575")
+                blockchain_server_url, blockchain_port = blockchain_server_url.split(':')
+            else:
+                blockchain_port = 7575  # Default port for blockchain server
+            blockchain_url = f"http://{blockchain_server_url}:{blockchain_port}"
+            blockchain_conn = rpyc.connect(blockchain_server_url, blockchain_port)
+            logger.info(f"Connected to blockchain server at {blockchain_server_url}:{blockchain_port}")
     except Exception as e:
         logger.error(f"Failed to connect to blockchain server: {str(e)}")
         print("\nMake sure the blockchain server is running and the IP address is correct.")
@@ -594,7 +595,8 @@ if __name__ == "__main__":
     print(f"Network: http://{local_ip}:8000")
     
     # Connect to blockchain server
-    connect_to_blockchain_server()
+    blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100:7575) [Press Enter to skip]: ").strip()
+    connect_to_blockchain_server(blockchain_server_url)
     
     print("\nPress Ctrl+C to stop the server")
     uvicorn.run(app, host="0.0.0.0", port=8000)

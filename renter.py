@@ -99,13 +99,15 @@ SERVER_URL = server_input.rstrip('/')  # Remove trailing slash if present
 blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100) [Press Enter to skip]: ").strip()
 if blockchain_server_url:
     try:
-        # Remove any protocol prefix and port if present
         blockchain_server_url = blockchain_server_url.replace('http://', '').replace('https://', '')
         if ':' in blockchain_server_url:
-            blockchain_server_url = blockchain_server_url.split(':')[0]
-        
-        blockchain_conn = rpyc.connect(blockchain_server_url, 7575)
-        print(f"Connected to blockchain server at {blockchain_server_url}:7575")
+            blockchain_server_url, blockchain_port = blockchain_server_url.split(':')
+        else:
+            blockchain_port = 7575  # Default port for blockchain server
+        blockchain_url = f"http://{blockchain_server_url}:{blockchain_port}"
+        blockchain_conn = rpyc.connect(blockchain_server_url, blockchain_port)
+        logger.info(f"Connected to blockchain server at {blockchain_server_url}:{blockchain_port}")
+
         
         username = input("Enter your username for blockchain account: ").strip()
         blockchain_address = blockchain_conn.root.exposed_create_account(username, 1000.0)

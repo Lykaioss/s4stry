@@ -18,13 +18,8 @@ def reset_project():
         "uploads"
     ]
     
-    print("\n=== Blockchain Reset Tool ===")
-    print("This will:")
-    print("1. Delete blockchain.json")
-    print("2. Delete accounts.json")
-    print("3. Clear client directory")
-    print("4. Clear renter directory")
-    print("\nWARNING: This will permanently delete all blockchain data!")
+    print("\n=== Project Reset Tool ===")
+    print("\nWARNING: This will permanently delete all project files created during execution!")
     
     confirm = input("\nAre you sure you want to continue? (yes/no): ").lower()
     if confirm not in ['yes', 'y', '']:
