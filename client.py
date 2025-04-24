@@ -200,23 +200,18 @@ class StorageClient:
     def calculate_storage_cost(self, file_path: str, duration_minutes: int) -> float:
         """Calculate the cost of storing a file based on size and duration."""
         if duration_minutes is None or duration_minutes <= 0:
-            raise ValueError("Duration must be greater than 0 minutes")
-                
+            raise ValueError("Duration must be greater than 0 minutes")       
         # Base cost per MB per minute
         BASE_COST_PER_MB_PER_MINUTE = 0.01  # $0.01 per MB per minute
-
         file_path = Path(file_path)
         if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-            
+            raise FileNotFoundError(f"File not found: {file_path}") 
         # Get file size in MB
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-        
         # Calculate total cost
         total_cost = file_size_mb * duration_minutes * BASE_COST_PER_MB_PER_MINUTE
         
-        # Round to 2 decimal places
-        return round(total_cost, 2)
+        return round(total_cost, 2) # Round to 2 decimal places
 
     def make_payment(self, amount: float, renter_address: str) -> str:
         """Make a payment to a renter's blockchain address and return the transaction hash."""
