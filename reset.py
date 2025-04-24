@@ -7,7 +7,9 @@ def reset_project():
     # Files to delete
     files_to_delete = [
         "blockchain.json",
-        "accounts.json",
+        "wallets.json",
+        "client_public_keys.json",
+        "current_block.json"
     ]
 
     directories_to_delete = [
@@ -16,13 +18,8 @@ def reset_project():
         "uploads"
     ]
     
-    print("\n=== Blockchain Reset Tool ===")
-    print("This will:")
-    print("1. Delete blockchain.json")
-    print("2. Delete accounts.json")
-    print("3. Clear client directory")
-    print("4. Clear renter directory")
-    print("\nWARNING: This will permanently delete all blockchain data!")
+    print("\n=== Project Reset Tool ===")
+    print("\nWARNING: This will permanently delete all project files created during execution!")
     
     confirm = input("\nAre you sure you want to continue? (yes/no): ").lower()
     if confirm not in ['yes', 'y', '']:
@@ -31,12 +28,14 @@ def reset_project():
     
     try:
         # Delete blockchain and accounts files
+        print("\nDeleting blockchain and accounts files...")
         for file in files_to_delete:
             if os.path.exists(file):
                 os.remove(file)
                 print(f"Deleted {file}")
         
         # Clear client downloads
+        print("\nDeleting Directories...")
         for directory in directories_to_delete:
             print(f"Deleting {directory}")
             if os.path.exists(directory):

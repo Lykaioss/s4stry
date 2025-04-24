@@ -15,6 +15,11 @@ from collections import defaultdict
 import random
 import socket
 import asyncio
+import rpyc
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes
+import base64
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -47,11 +52,45 @@ racks: Dict[str, Set[str]] = defaultdict(set)  # rack_id -> set of renter_ids
 # Sharding configuration
 SHARD_SIZE = 1024 * 1024  # 1MB per shard
 MIN_SHARDS = 3  # Minimum number of shards to create
+MAX_SHARDS = 10  # Maximum number of shards to create
 REPLICATION_FACTOR = 3  # Number of copies for each shard
 RACK_COUNT = 3  # Number of racks in the system
 
 # Renter management
 RENTER_TIMEOUT = 60  # seconds
+
+# Blockchain configuration
+blockchain_conn = None
+blockchain_url = None
+
+# Store public keys for clients
+client_public_keys: Dict[str, str] = {}  # username -> public_key_pem
+
+# Path for storing public keys
+PUBLIC_KEYS_FILE = Path("client_public_keys.json")
+
+# Store active challenges
+active_challenges: Dict[str, str] = {}  # username -> nonce
+
+def connect_to_blockchain_server(blockchain_server_url: str = None):
+    """Connect to the blockchain server."""
+    global blockchain_conn, blockchain_url
+    try:
+        if blockchain_server_url:
+            # Remove any protocol prefix and port if present
+            blockchain_server_url = blockchain_server_url.replace('http://', '').replace('https://', '')
+            if ':' in blockchain_server_url:
+                blockchain_server_url, blockchain_port = blockchain_server_url.split(':')
+            else:
+                blockchain_port = 7575  # Default port for blockchain server
+            blockchain_url = f"http://{blockchain_server_url}:{blockchain_port}"
+            blockchain_conn = rpyc.connect(blockchain_server_url, blockchain_port)
+            logger.info(f"Connected to blockchain server at {blockchain_server_url}:{blockchain_port}")
+    except Exception as e:
+        logger.error(f"Failed to connect to blockchain server: {str(e)}")
+        print("\nMake sure the blockchain server is running and the IP address is correct.")
+        print("Example format: 192.168.0.103 (without http:// or port number)")
+        print("The blockchain server should be running on port 7575")
 
 def assign_rack(renter_id: str) -> str:
     """Assign a renter to a rack."""
@@ -172,7 +211,11 @@ def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict
 @app.get("/")
 async def read_root():
     """Health check endpoint."""
-    return {"status": "healthy", "message": "Distributed Storage Server is running"}
+    return {
+        "status": "healthy",
+        "message": "Distributed Storage Server is running",
+        "blockchain_connected": blockchain_conn is not None
+    }
 
 @app.post("/register-renter/")
 async def register_renter(renter_info: dict):
@@ -183,7 +226,8 @@ async def register_renter(renter_info: dict):
             "url": renter_info["url"],
             "storage_available": renter_info["storage_available"],
             "last_heartbeat": time.time(),
-            "rack_id": assign_rack(renter_id)
+            "rack_id": assign_rack(renter_id),
+            "blockchain_address": renter_info.get("blockchain_address")
         }
         logger.info(f"Renter registered successfully with ID: {renter_id} in rack {renters[renter_id]['rack_id']}")
         return {"renter_id": renter_id, "message": "Renter registered successfully"}
@@ -198,6 +242,7 @@ async def receive_heartbeat(heartbeat_info: dict):
         renter_id = heartbeat_info["renter_id"]
         if renter_id in renters:
             renters[renter_id]["last_heartbeat"] = time.time()
+            renters[renter_id]["blockchain_address"] = heartbeat_info.get("blockchain_address")
             return {"message": "Heartbeat received"}
         else:
             raise HTTPException(status_code=404, detail="Renter not found")
@@ -232,7 +277,7 @@ async def upload_file(file: UploadFile = File(...)):
         
         # Calculate number of shards based on file size
         file_size = os.path.getsize(temp_path)
-        num_shards = max(MIN_SHARDS, math.ceil(file_size / SHARD_SIZE))
+        num_shards = max(MIN_SHARDS, min(MAX_SHARDS, math.ceil(file_size / SHARD_SIZE)))
         
         # Calculate actual replication factor based on available renters
         actual_replication = min(REPLICATION_FACTOR, len(renters))
@@ -277,14 +322,58 @@ async def upload_file(file: UploadFile = File(...)):
                 except Exception as e:
                     logger.error(f"Error cleaning up shard {shard}: {str(e)}")
 
-@app.get("/download/{filename}")
-async def download_file(filename: str):
-    """Download a file by retrieving and reconstructing its shards."""
+def load_public_keys():
+    """Load public keys from JSON file."""
     try:
+        if PUBLIC_KEYS_FILE.exists():
+            with open(PUBLIC_KEYS_FILE, 'r') as f:
+                return json.load(f)
+        return {}
+    except Exception as e:
+        logger.error(f"Error loading public keys: {e}")
+        return {}
+
+def save_public_keys():
+    """Save public keys to JSON file."""
+    try:
+        with open(PUBLIC_KEYS_FILE, 'w') as f:
+            json.dump(client_public_keys, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving public keys: {e}")
+
+# Load public keys on startup
+client_public_keys = load_public_keys()
+
+@app.post("/register-public-key/")
+async def register_public_key(data: dict):
+    """Register a client's public key."""
+    try:
+        username = data.get("username")
+        public_key_pem = data.get("public_key")
+        
+        if not username or not public_key_pem:
+            raise HTTPException(status_code=400, detail="Username and public key are required")
+        
+        client_public_keys[username] = public_key_pem
+        save_public_keys()  # Save to file after updating
+        logger.info(f"Registered public key for user: {username}")
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Failed to register public key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/download/{filename}")
+async def download_file(filename: str, username: str):
+    """Download a file with challenge-response authentication."""
+    try:
+        # Check if user has a registered public key
+        if username not in client_public_keys:
+            raise HTTPException(status_code=401, detail="Public key not registered")
+        
         # Check if file exists in our records
         if filename not in shard_locations:
             raise HTTPException(status_code=404, detail="File not found")
-
+        
         # Create a temporary file for reconstruction
         temp_file = UPLOAD_DIR / f"reconstructed_{filename}"
         
@@ -340,25 +429,37 @@ async def download_file(filename: str):
                     status_code=500,
                     detail="Failed to retrieve all shards"
                 )
-
-        # Schedule file deletion after 30 seconds
-        asyncio.create_task(delete_temp_file_after_delay(temp_file, 30))
-
-        # Return the reconstructed file
-        return FileResponse(
-            path=temp_file,
-            filename=filename,
-            media_type='application/octet-stream'
+        
+        # Generate a random nonce
+        nonce = str(uuid.uuid4())
+        
+        # Store the nonce for this user
+        active_challenges[username] = nonce
+        
+        # Encrypt the nonce with the client's public key
+        public_key = serialization.load_pem_public_key(
+            client_public_keys[username].encode('utf-8')
+        )
+        encrypted_nonce = public_key.encrypt(
+            nonce.encode('utf-8'),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
         )
         
-    except HTTPException:
-        raise
+        # Log the encrypted challenge
+        logger.info(f"Generated encrypted challenge for user {username}: {base64.b64encode(encrypted_nonce).decode('utf-8')}")
+        
+        # Return the encrypted nonce as a challenge
+        return {
+            "challenge": base64.b64encode(encrypted_nonce).decode('utf-8'),
+            "filename": filename
+        }
     except Exception as e:
-        logger.error(f"Error downloading file: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to download file: {str(e)}"
-        )
+        logger.error(f"Error in download challenge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def delete_temp_file_after_delay(file_path: Path, delay_seconds: int):
     """Delete a temporary file after a specified delay."""
@@ -369,6 +470,54 @@ async def delete_temp_file_after_delay(file_path: Path, delay_seconds: int):
             logger.info(f"Deleted temporary file: {file_path}")
     except Exception as e:
         logger.error(f"Error deleting temporary file {file_path}: {str(e)}")
+
+@app.post("/verify-challenge/{filename}")
+async def verify_challenge(filename: str, username: str, data: dict):
+    """Verify the client's response to the challenge."""
+    try:
+        # Check if user has a registered public key
+        if username not in client_public_keys:
+            raise HTTPException(status_code=401, detail="Public key not registered")
+        
+        # Check if there's an active challenge for this user
+        if username not in active_challenges:
+            raise HTTPException(status_code=401, detail="No active challenge found")
+        
+        # Get the response from the request body
+        response = data.get("response")
+        if not response:
+            raise HTTPException(status_code=400, detail="Response is required")
+        
+        # Log the decrypted response
+        logger.info(f"Received decrypted response from user {username}: {response}")
+        
+        # Verify the response matches the stored nonce
+        stored_nonce = active_challenges[username]
+        if response != stored_nonce:
+            # Remove the challenge to prevent replay attacks
+            del active_challenges[username]
+            raise HTTPException(status_code=401, detail="Invalid challenge response")
+        
+        # Remove the used challenge
+        del active_challenges[username]
+        
+        # If we get here, the challenge was successfully verified
+        # Proceed with file download
+        file_path = UPLOAD_DIR / f"reconstructed_{filename}"
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Schedule file deletion after 30 seconds
+        asyncio.create_task(delete_temp_file_after_delay(file_path, 30))
+        
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type="application/octet-stream"
+        )
+    except Exception as e:
+        logger.error(f"Error verifying challenge: {e}")
+        raise HTTPException(status_code=401, detail="Challenge verification failed")
 
 @app.post("/delete/{filename}")
 async def delete_file(filename: str):
@@ -420,6 +569,23 @@ def get_local_ip():
         # Fallback to localhost
         return "127.0.0.1"
 
+@app.get("/get-renters/")
+async def get_renters():
+    """Get information about all active renters."""
+    cleanup_inactive_renters()
+    
+    # Prepare renter information
+    renter_info = []
+    for renter_id, renter in renters.items():
+        renter_info.append({
+            "renter_id": renter_id,
+            "url": renter["url"],
+            "storage_available": renter["storage_available"],
+            "blockchain_address": renter.get("blockchain_address")
+        })
+    
+    return renter_info
+
 if __name__ == "__main__":
     import uvicorn
     local_ip = get_local_ip()
@@ -427,5 +593,10 @@ if __name__ == "__main__":
     print(f"Server will be accessible at:")
     print(f"Local: http://localhost:8000")
     print(f"Network: http://{local_ip}:8000")
+    
+    # Connect to blockchain server
+    blockchain_server_url = input("Enter the blockchain server URL (e.g., 192.168.1.100:7575) [Press Enter to skip]: ").strip()
+    connect_to_blockchain_server(blockchain_server_url)
+    
     print("\nPress Ctrl+C to stop the server")
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)
