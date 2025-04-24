@@ -198,6 +198,9 @@ def send_heartbeat():
     """Send periodic heartbeat to server to maintain active status."""
     while not stop_heartbeat.is_set():
         try:
+            # Check if the storage blocker file exists
+            if not os.path.exists(STORAGE_BLOCKER_PATH):
+                raise Exception("Storage may be unavailable.")
             response = requests.post(
                 f"{SERVER_URL}/heartbeat/",
                 json={

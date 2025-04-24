@@ -189,7 +189,7 @@ def distribute_shards_to_renters(shards: List[Path], filename: str) -> List[dict
                     response = requests.post(
                         f"{renter['url']}/store-shard/",
                         files=files,
-                        timeout=30
+                        timeout=300
                     )
                     response.raise_for_status()
                 
@@ -410,7 +410,7 @@ async def download_file(filename: str, username: str):
                     response = requests.get(
                         f"{renter_url}/retrieve-shard/",
                         params={'filename': shard['shard_path']},
-                        timeout=30
+                        timeout=300
                     )
                     response.raise_for_status()
                     
@@ -541,7 +541,7 @@ async def delete_file(filename: str):
                 response = requests.post(
                     f"{renter['url']}/delete-shard/",
                     params={'filename': shard_info['shard_path']},
-                    timeout=30
+                    timeout=300
                 )
                 response.raise_for_status()
                 logger.info(f"Deleted shard {shard_info['shard_path']} from renter {shard_info['renter_id']}")
