@@ -1,0 +1,14 @@
+{
+    "chain": [
+        {
+            "previous_hash": null,
+            "timestamp": "2025-04-24T19:24:08.158962",
+            "index": 0,
+            "block_hash": "fd2eaf809c4566e52a0e50372d42805536505221ec711ce742d53705fcfc42ba",
+            "transactions": []
+        }
+    ],
+    "wallets": {
+        "48c805388fe59d3de626a9f587c4253cdbe7b8ba1de550ac328467c1169c7a30": 1000.0
+    }
+}
