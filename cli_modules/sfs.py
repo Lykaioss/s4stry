@@ -178,7 +178,8 @@ def cmd_upload(args):
         return
     
     try:
-        client.upload_file(args.file_path, args.duration)
+        cost = client.calculate_storage_cost(args.file_path, args.duration)
+        client.upload_file(args.file_path, cost ,args.duration)
         print_success(f"File '{args.file_path}' uploaded successfully.")
     except Exception as e:
         print_error(f"Upload failed: {str(e)}")

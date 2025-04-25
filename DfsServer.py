@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, Form, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
@@ -73,8 +73,8 @@ PUBLIC_KEYS_FILE = Path("client_public_keys.json")
 active_challenges: Dict[str, str] = {}  # username -> nonce
 
 def connect_to_blockchain_server(blockchain_server_url: str = None):
-    """Connect to the blockchain server."""
-    global blockchain_conn, blockchain_url
+    """Connect to the blockchain server and create a blockchain account for the server."""
+    global blockchain_conn, blockchain_url, server_blockchain_address
     try:
         if blockchain_server_url:
             # Remove any protocol prefix and port if present
@@ -86,6 +86,12 @@ def connect_to_blockchain_server(blockchain_server_url: str = None):
             blockchain_url = f"http://{blockchain_server_url}:{blockchain_port}"
             blockchain_conn = rpyc.connect(blockchain_server_url, blockchain_port)
             logger.info(f"Connected to blockchain server at {blockchain_server_url}:{blockchain_port}")
+            
+            # Create a blockchain account for the server
+            server_username = "DistributedStorageServer"
+            initial_balance = 0.0  # Server starts with zero balance
+            server_blockchain_address = blockchain_conn.root.exposed_create_account(server_username, initial_balance)
+            logger.info(f"Server blockchain account created with address: {server_blockchain_address}")
     except Exception as e:
         logger.error(f"Failed to connect to blockchain server: {str(e)}")
         print("\nMake sure the blockchain server is running and the IP address is correct.")
@@ -251,7 +257,7 @@ async def receive_heartbeat(heartbeat_info: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload/")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), payment: float = Form(...)):
     """Upload a file and distribute it across renters with replication."""
     cleanup_inactive_renters()
     
@@ -263,6 +269,14 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=503,
             detail="No renters available. Please wait for a renter to register."
+        )
+    
+    # Validate the payment parameter
+    if payment <= 0.0:
+        logger.error(f"Invalid payment amount. Payment is currently {payment} (must be greater than 0).")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid payment amount. Payment must be greater than 0.0"
         )
     
     temp_path = None
@@ -292,8 +306,20 @@ async def upload_file(file: UploadFile = File(...)):
         distributed_shards = distribute_shards_to_renters(shards, file.filename)
         logger.info(f"Successfully distributed shards: {distributed_shards}")
         
+        # Calculate the total number of unique renters
+        unique_renters = {shard["renter_id"] for shard in distributed_shards}
+        total_renters = len(unique_renters)
+        
         # Store shard information
-        shard_locations[file.filename] = distributed_shards
+        renter_share = payment / total_renters if total_renters > 0 else 0
+        shard_locations[file.filename] = {
+            "shards": distributed_shards,
+            "payment": payment,
+            "renter_share": renter_share,
+            "retrieved": False
+        }
+        
+        logger.info(f"Payment details stored: Total payment = {payment}, Renter share = {renter_share}")
         
         return {
             "filename": file.filename,
@@ -357,7 +383,11 @@ async def register_public_key(data: dict):
         client_public_keys[username] = public_key_pem
         save_public_keys()  # Save to file after updating
         logger.info(f"Registered public key for user: {username}")
-        return {"status": "success"}
+        
+        return {
+            "status": "success",
+            "server_blockchain_address": server_blockchain_address
+        }
     except Exception as e:
         logger.error(f"Failed to register public key: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -380,7 +410,7 @@ async def download_file(filename: str, username: str):
         # Reconstruct the file from shards
         with open(temp_file, 'wb') as reconstructed_file:
             # Get all shards for this file
-            shards = shard_locations[filename]
+            shards = shard_locations[filename]["shards"]  # Access the "shards" key
             
             # Sort shards by shard_index and replica_index
             shards.sort(key=lambda x: (x['shard_index'], x['replica_index']))
@@ -488,9 +518,6 @@ async def verify_challenge(filename: str, username: str, data: dict):
         if not response:
             raise HTTPException(status_code=400, detail="Response is required")
         
-        # Log the decrypted response
-        logger.info(f"Received decrypted response from user {username}: {response}")
-        
         # Verify the response matches the stored nonce
         stored_nonce = active_challenges[username]
         if response != stored_nonce:
@@ -506,6 +533,29 @@ async def verify_challenge(filename: str, username: str, data: dict):
         file_path = UPLOAD_DIR / f"reconstructed_{filename}"
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="File not found")
+        
+        # Mark the file as retrieved
+        if filename in shard_locations:
+            shard_locations[filename]["retrieved"] = True
+        
+        # Distribute payments to renters
+        payment_details = shard_locations.get(filename, {})
+        renter_share = payment_details.get("renter_share", 0)
+        distributed_shards = payment_details.get("shards", [])
+        
+        for shard in distributed_shards:
+            renter_id = shard["renter_id"]
+            renter = renters.get(renter_id)
+            if renter and blockchain_conn:
+                try:
+                    blockchain_conn.root.exposed_send_money(
+                        server_blockchain_address,
+                        renter["blockchain_address"],
+                        renter_share
+                    )
+                    logger.info(f"Paid {renter_share} to renter {renter_id}")
+                except Exception as e:
+                    logger.error(f"Failed to pay renter {renter_id}: {str(e)}")
         
         # Schedule file deletion after 30 seconds
         asyncio.create_task(delete_temp_file_after_delay(file_path, 30))
@@ -532,8 +582,11 @@ async def delete_file(filename: str):
         )
     
     try:
+        # Access the list of shards under the "shards" key
+        shards = shard_locations[filename]["shards"]
+        
         # Delete shards from all renters
-        for shard_info in shard_locations[filename]:
+        for shard_info in shards:
             renter = renters.get(shard_info['renter_id'])
             if not renter:
                 continue

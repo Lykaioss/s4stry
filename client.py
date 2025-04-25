@@ -78,7 +78,7 @@ class StorageClient:
         
         # Get username from user
         try:
-            self.username = self.create_username(username) # creates username, adds nonce and saves it.
+            self.username = self.set_or_get_username(username) # creates username, adds nonce and saves it.
             print(f"Your username is: {self.username}")
         except ValueError as e:
             print(f"Username cannot be empty. Please try again.")
@@ -96,7 +96,29 @@ class StorageClient:
         logger.info(f"Keys directory: {self.keys_dir}")
         logger.info(f"Username: {self.username}")
     
-    def create_username(self, username) -> str:
+    def set_or_get_blockchain_address(self, address=None) -> str:
+        """Prompt user for username and store it in a JSON file."""
+        user_data_file = self.keys_dir / "user_data.json"
+        # Load existing user data if the file exists
+        if user_data_file.exists():
+            try:
+                print(f"Loading existing user data from {user_data_file}...")
+                with open(user_data_file, 'r') as f:
+                    user_data = json.load(f)
+                    stored_address = user_data.get("address")
+                    if stored_address:
+                        print(f"Found local address: {stored_address}")
+                        return stored_address
+                    else:
+                        user_data["address"] = address
+                    with open(user_data_file, 'w') as f:
+                        json.dump(user_data, f, indent=4)
+                    return address
+            except Exception as e:
+                logger.error(f"Error reading user data file: {e}")
+
+
+    def set_or_get_username(self, username) -> str:
         """Prompt user for username and store it in a JSON file."""
         user_data_file = self.keys_dir / "user_data.json"
         # Load existing user data if the file exists
@@ -243,7 +265,7 @@ class StorageClient:
             raise
     
     @stopwatch
-    def upload_file(self, file_path: str, cost, duration_minutes: int = 1) -> None:
+    def upload_file(self, file_path: str, cost:float, duration_minutes: int = 1) -> None:
         """Upload a file to the storage system."""
         try:
             file_path = Path(file_path)
@@ -258,34 +280,17 @@ class StorageClient:
             if file_size_mb < MIN_FILE_SIZE_MB:
                 raise ValueError(f"File size must be at least {MIN_FILE_SIZE_MB} MB. Current file size: {file_size_mb:.2f} MB")
             
-            # Calculate storage cost if duration is specified
-            payment = 0
-            transaction_hash = None
-                
-            # Get renter information from server
-            response = requests.get(f"{self.server_url}/get-renters/")
-            response.raise_for_status()
-            renters = response.json()
-            
-            if not renters:
-                raise Exception("No renters available")
-            
-            # Select a random renter to pay
-            renter = random.choice(renters)
-            renter_address = renter.get('blockchain_address')
-            
-            if not renter_address:
-                raise Exception("Selected renter has no blockchain address")
+            # Fetch the server's blockchain address
+            server_blockchain_address = self.get_server_blockchain_address()
             
             # Ask for confirmation
-            confirm = input(f"Confirm payment of {cost} to renter {renter_address}? (y/n): ").lower()
+            confirm = input(f"Confirm payment of {cost} to the server at {server_blockchain_address}? (y/n): ").lower()
             if confirm != 'y':
                 print("Upload cancelled")
                 return
             
-            # Make the payment and get the transaction hash
-            transaction_hash = self.make_payment(cost, renter_address)
-            payment = cost
+            # Make the payment to the server
+            transaction_hash = self.make_payment(cost, server_blockchain_address)
             
             # Create temporary encrypted file
             temp_encrypted = file_path.parent / f"encrypted_{file_path.name}"
@@ -297,15 +302,16 @@ class StorageClient:
                 response = requests.post(
                     f"{self.server_url}/upload/",
                     files=files,
+                    data={"payment":cost},
                     timeout=30
                 )
                 response.raise_for_status()
-            
+        
             # Clean up temporary file
             os.remove(temp_encrypted)
-                       
+            
             # Update upload history
-            self.update_upload_history(file_path.name, file_size_mb, payment, transaction_hash)
+            self.update_upload_history(file_path.name, file_size_mb, cost, transaction_hash)
             
             # If duration is specified, schedule automatic retrieval
             if duration_minutes is not None and duration_minutes > 0:
@@ -522,6 +528,26 @@ class StorageClient:
                 }
             )
             response.raise_for_status()
+            
+            # Extract server blockchain address from the response
+            server_blockchain_address = response.json().get("server_blockchain_address")
+            if server_blockchain_address:
+                # Save the server blockchain address in user_data.json
+                user_data_file = self.keys_dir / "user_data.json"
+                if user_data_file.exists():
+                    with open(user_data_file, 'r') as f:
+                        user_data = json.load(f)
+                else:
+                    user_data = {"username": self.username, "upload_history": []}
+                
+                user_data["server_blockchain_address"] = server_blockchain_address
+                with open(user_data_file, 'w') as f:
+                    json.dump(user_data, f, indent=4)
+                
+                logger.info(f"Server blockchain address saved: {server_blockchain_address}")
+            else:
+                logger.warning("Server blockchain address not found in the response")
+            
             logger.info("Public key registered with server")
         except Exception as e:
             logger.error(f"Failed to register public key: {e}")
@@ -662,6 +688,24 @@ class StorageClient:
         except Exception as e:
             logger.error(f"Error retrieving file: {e}")
 
+    def get_server_blockchain_address(self) -> str:
+        """Fetch the server's blockchain address from user_data.json."""
+        user_data_file = self.keys_dir / "user_data.json"
+        try:
+            if user_data_file.exists():
+                with open(user_data_file, 'r') as f:
+                    user_data = json.load(f)
+                    server_blockchain_address = user_data.get("server_blockchain_address")
+                    if server_blockchain_address:
+                        return server_blockchain_address
+                    else:
+                        raise ValueError("Server blockchain address not found in user_data.json")
+            else:
+                raise FileNotFoundError("user_data.json file not found")
+        except Exception as e:
+            logger.error(f"Error fetching server blockchain address: {e}")
+            raise
+
 def main():
     """Main function to run the client."""
     print("Welcome to the Distributed Storage Client!")
@@ -689,6 +733,7 @@ def main():
             print(f"Your blockchain address: {client.blockchain_address}")
             balance = client.get_blockchain_balance(client.blockchain_address)
             print(f"Your blockchain balance: {balance}")
+            client.set_or_get_blockchain_address(client.blockchain_address)  # Save the address in user_data.json
         except Exception as e:
             if isinstance(e, Account.AccountExists):  # Ensure it's not the AccountExists exception
                 print("This username already exists. Please use a different username.")
