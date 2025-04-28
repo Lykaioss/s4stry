@@ -543,8 +543,14 @@ async def verify_challenge(filename: str, username: str, data: dict):
         renter_share = payment_details.get("renter_share", 0)
         distributed_shards = payment_details.get("shards", [])
         
+        # Track payments to avoid paying the same renter multiple times
+        paid_renters = set()
+        
         for shard in distributed_shards:
             renter_id = shard["renter_id"]
+            if renter_id in paid_renters:
+                continue  # Skip if this renter has already been paid
+            
             renter = renters.get(renter_id)
             if renter and blockchain_conn:
                 try:
@@ -554,6 +560,7 @@ async def verify_challenge(filename: str, username: str, data: dict):
                         renter_share
                     )
                     logger.info(f"Paid {renter_share} to renter {renter_id}")
+                    paid_renters.add(renter_id)  # Mark this renter as paid
                 except Exception as e:
                     logger.error(f"Failed to pay renter {renter_id}: {str(e)}")
         
