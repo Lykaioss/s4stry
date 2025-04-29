@@ -1,3 +1,4 @@
+from ast import List
 from re import A
 from turtle import st
 import requests
@@ -69,6 +70,10 @@ class StorageClient:
         # Create keys directory
         self.keys_dir = self.base_dir / "keys"
         self.keys_dir.mkdir(exist_ok=True)
+
+        # Create temp directory
+        self.temp_dir = self.base_dir / "temp"
+        self.temp_dir.mkdir(exist_ok=True)
         
         # Load or generate encryption key
         self.encryption_key = self.load_or_generate_key()
@@ -96,6 +101,18 @@ class StorageClient:
         logger.info(f"Keys directory: {self.keys_dir}")
         logger.info(f"Username: {self.username}")
     
+    def clean_tmp_file(self, tmp_file):
+        if not os.path.exists(self.temp_dir):
+            logger.warning("Temp directory is missing")
+            return
+        try:
+            tmp_f_path = self.temp_dir / tmp_file
+            os.remove(tmp_f_path)
+            logger.info(f"Successfully deleted file: {tmp_file}")
+        except Exception as e:
+            print(f"Error occured while removing temp file:{e}")
+        
+
     def set_or_get_blockchain_address(self, address=None) -> str:
         """Prompt user for username and store it in a JSON file."""
         user_data_file = self.keys_dir / "user_data.json"
@@ -205,14 +222,25 @@ class StorageClient:
         def retrieve_after_delay():
             time.sleep(duration_minutes * 60)  # Convert minutes to seconds
             try:
+            # Check if the file has already been marked as retrieved
+                user_data_file = self.keys_dir / "user_data.json"
+                if user_data_file.exists():
+                    with open(user_data_file, 'r') as f:
+                        user_data = json.load(f)
+                        for upload in user_data.get("upload_history", []):
+                            if upload["file_name"] == filename and upload.get("retrieved", False):
+                                print(f"File '{filename}' has already been marked as retrieved. Skipping automatic retrieval.")
+                                return
+                
                 print(f"\nAutomatically retrieving file: {filename}")
                 self.download_file(filename)
+                
                 # Remove from scheduled retrievals after successful retrieval
                 if filename in self.scheduled_retrievals:
                     del self.scheduled_retrievals[filename]
             except Exception as e:
                 print(f"Error during automatic retrieval of {filename}: {str(e)}")
-        
+
         # Store the thread in our tracking dictionary
         thread = threading.Thread(target=retrieve_after_delay, daemon=True)
         self.scheduled_retrievals[filename] = thread
@@ -276,7 +304,7 @@ class StorageClient:
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             
             # Enforce minimum file size of 5 MB
-            MIN_FILE_SIZE_MB = 5
+            MIN_FILE_SIZE_MB = 1
             if file_size_mb < MIN_FILE_SIZE_MB:
                 raise ValueError(f"File size must be at least {MIN_FILE_SIZE_MB} MB. Current file size: {file_size_mb:.2f} MB")
             
@@ -284,11 +312,12 @@ class StorageClient:
             server_blockchain_address = self.get_server_blockchain_address()
             
             # Ask for confirmation
-            confirm = input(f"Confirm payment of {cost} to the server at {server_blockchain_address}? (y/n): ").lower()
-            if confirm != 'y':
-                print("Upload cancelled")
-                return
+            # confirm = input(f"Confirm payment of {cost} to the server at {server_blockchain_address}? (y/n): ").lower()
+            # if confirm != 'y':
+            #     print("Upload cancelled")
+            #     return
             
+            print(f"Making payment of {cost} to the server at {server_blockchain_address}...")
             # Make the payment to the server
             transaction_hash = self.make_payment(cost, server_blockchain_address)
             
@@ -317,6 +346,8 @@ class StorageClient:
             if duration_minutes is not None and duration_minutes > 0:
                 self.schedule_retrieval(file_path.name, duration_minutes)
             
+            self.clean_tmp_file(file_path.name)
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Error uploading file: {str(e)}")
             raise
@@ -630,7 +661,7 @@ class StorageClient:
         except Exception as e:
             logger.error(f"Error marking file as retrieved: {e}")
 
-    def list_unretrieved_files(self) -> None:
+    def list_unretrieved_files(self) -> List:
         """List all files from user_data.json that haven't been retrieved yet."""
         user_data_file = self.keys_dir / "user_data.json"
         
@@ -654,6 +685,8 @@ class StorageClient:
                     print(f"- {file_name}")
             else:
                 print("\nAll files have been retrieved.")
+
+            return unretrieved_files
         except Exception as e:
             logger.error(f"Error listing unretrieved files: {e}")
 
