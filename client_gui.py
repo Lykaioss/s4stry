@@ -91,7 +91,7 @@ def show_balance():
     if client and client.blockchain_conn and client.blockchain_address:
         try:
             balance = client.get_blockchain_balance(client.blockchain_address)
-            blockchain_balance_label.text = f"{balance}"
+            blockchain_balance_label.text = f"{float(balance):.2f}"
         except Exception as e:
             ui.notify(f"Error: {e}", color="negative")
             print(traceback.format_exc())
@@ -156,7 +156,7 @@ def pay_user(receiver, amount):
         if success:
             ui.notify("Payment sent successfully")
             balance = client.get_blockchain_balance(client.blockchain_address)
-            blockchain_balance_label.text = f"{balance}"
+            blockchain_balance_label.text = f"{float(balance):.2f}"
             print(f"Your new balance: {balance}")
         
     except Exception as e:

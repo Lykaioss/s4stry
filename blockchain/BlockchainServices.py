@@ -90,6 +90,7 @@ class Transaction:
         self.receipt = self._create_receipt()
     
     def _create_receipt(self):
+        print(f"Creating receipt for transaction: {self.sender} -> {self.receiver} of amount {self.amount}")
         receipt = self.sender + self.receiver + str(self.amount)
         return hashlib.sha256(receipt.encode()).hexdigest() 
 
@@ -193,8 +194,5 @@ class Blockchain:
         self._load_chain()
         print(self.__dict__)
         
-    
-if __name__ == "__main__":
-    acc1 = Account("123", 100)
-    acc2 = Account("123", 200)
+
 
