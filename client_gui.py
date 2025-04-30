@@ -24,7 +24,7 @@ def initialize_client(server_url, blockchain_url, username):
             return
 
         client = StorageClient(username, server_url, blockchain_url)
-        ui.notify(f"Client initialized for {username}")
+        ui.notify(f"Client initialized for {username}", color="positive")
 
         # Create blockchain account if blockchain URL is provided
         if blockchain_url:
@@ -56,7 +56,7 @@ def upload_file(file_path, duration):
 
         cost = client.calculate_storage_cost(file_path, duration)
         client.upload_file(file_path, cost, duration)
-        ui.notify("File uploaded successfully")
+        ui.notify("File uploaded successfully", color="positive")
     except Exception as e:
         ui.notify(f"Error: {e}", color="negative")
         print(traceback.format_exc())
@@ -82,7 +82,7 @@ def retrieve_file(file_name, output_path):
             ui.notify("File name cannot be empty.", color="negative")
             return
         client.retrieve_file(file_name, output_path)
-        ui.notify("File retrieved successfully")
+        ui.notify("File retrieved successfully", color="positive")
     except Exception as e:
         ui.notify(f"Error: {e}", color="negative")
         print(traceback.format_exc())
@@ -135,7 +135,9 @@ def fetch_unretrieved_files(container):
                     for file in files:
                         ui.item(str(file))
             else:
-                container.add(ui.label("No unretrieved files found."))
+                with container:
+                    ui.item("No unretrieved files found.")
+                #container.add()
         except Exception as e:
             ui.notify(f"Error: {e}", color="negative")
             print(traceback.format_exc())
@@ -154,7 +156,7 @@ def pay_user(receiver, amount):
 
         success = client.send_blockchain_payment(client.blockchain_address, receiver, amount)
         if success:
-            ui.notify("Payment sent successfully")
+            ui.notify("Payment sent successfully", color="positive")
             balance = client.get_blockchain_balance(client.blockchain_address)
             blockchain_balance_label.text = f"{float(balance):.2f}"
             print(f"Your new balance: {balance}")
